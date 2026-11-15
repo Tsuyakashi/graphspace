@@ -19,7 +19,7 @@ export async function startServer({ seed = false } = {}) {
   const port = await freePort();
   const child = spawn(process.execPath, ['server/index.mjs'], {
     cwd: ROOT, stdio: ['ignore', 'pipe', 'inherit'],
-    env: { ...process.env, PORT: String(port), HOST: '127.0.0.1', GRAPHSPACE_DATA: data, GRAPHSPACE_SEED: seed ? '1' : '0', GRAPHSPACE_AUTHOR: 'test' },
+    env: { ...process.env, PORT: String(port), HOST: '127.0.0.1', GRAPHSPACE_DATA: data, GRAPHSPACE_SEED: seed ? '1' : '0', GRAPHSPACE_DEMO: 'orbit', GRAPHSPACE_AUTHOR: 'test' },
   });
   await new Promise((resolve, reject) => {
     child.once('exit', (code) => reject(new Error(`сервер не запустился, код ${code}`)));

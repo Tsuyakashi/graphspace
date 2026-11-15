@@ -1,10 +1,12 @@
-// Демо-проект: показывает смену корня, виды по типам, общий ресурс и родительский док со вставками.
+// Демо-данные. По умолчанию — общий набор «Personal project #1» (server/demo-personal.mjs), тот же, что в прототипе.
+// GRAPHSPACE_DEMO=orbit — прежний демо-проект Orbit (на нём держатся e2e-тесты).
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { db, createNode, addVersion, addLink } from './db.mjs';
+import { seedPersonal } from './demo-personal.mjs';
 
 const space = (title, parent, label) => createNode({ type: 'space', title, parent_id: parent?.id ?? null, props: { label } });
 const res = (title, parent, kind, url, note = '') => createNode({ type: 'resource', title, parent_id: parent.id, props: { kind, url, note } });
@@ -44,7 +46,7 @@ function docx(markdown) {
   } catch { return null; } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 }
 
-export function seed() {
+export function seedOrbit() {
   const p = space('Orbit', null, 'проект');
   const mkt = space('marketing', p, 'направление');
   const dev = space('dev', p, 'направление');
@@ -137,6 +139,14 @@ export function seed() {
 
 ![[${p.id}|type=resource]]`);
   db.prepare('UPDATE nodes SET position = 0 WHERE id = ?').run(overview.id);
+}
+
+export const DEMOS = { personal: seedPersonal, orbit: seedOrbit };
+export function seed(name = process.env.GRAPHSPACE_DEMO || 'personal') {
+  const fn = DEMOS[name];
+  if (!fn) throw new Error(`нет демо-набора «${name}», есть: ${Object.keys(DEMOS).join(', ')}`);
+  db.exec('BEGIN');
+  try { fn(); db.exec('COMMIT'); } catch (e) { db.exec('ROLLBACK'); throw e; }
 }
 
 export function seedIfEmpty() {
