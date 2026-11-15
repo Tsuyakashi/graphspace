@@ -21,10 +21,11 @@
 - **Один протокол редакторов:** `<app>:ready / open / dirty / save / failed` через `postMessage`, same-origin. Craft раздаётся с `/craft/`. Патчей в сборки Craft не делаем, кроме фиксов упаковки в `setup-craft.sh`.
 - **Внешние ресурсы — ссылка + свойства.** Секреты в `props` не кладём.
 - **Удаление — корзина.** Блобы не удаляются.
+- **Вход — только Cloudflare Tunnel + Access.** Пользователь — из проверенного JWT `Cf-Access-Jwt-Assertion`, своей аутентификации и reverse-proxy нет. `AUTH_MODE=dev` — только для разработки.
 
 ## Проверка — после каждой задачи
 ```bash
-npm test                       # API, node:test
+npm test                       # API и вход, node:test
 npm run build                  # tsc + vite
 npm run test:e2e -- tests/shots # браузер; шаг WordCraft — если есть ./craft/wordcraft
 ```

@@ -81,6 +81,11 @@ try {
     await page.waitForSelector('.embed-board svg', { timeout: 30000 });
     assert.ok(await page.locator('.doc-read > .md > .embed-view > .embed').count() >= 15);
     assert.ok(await page.locator('.embed .md h1', { hasText: 'app2: API' }).count() === 1);
+    const href = await page.locator('.node-title a.btn', { hasText: 'Экспорт' }).getAttribute('href');
+    const res = await fetch(s.base + href);
+    assert.match(res.headers.get('content-type'), /text\/markdown/);
+    const md = await res.text();
+    assert.ok(md.includes('> # app2: API') || md.includes('> ## app2: API'), 'вставки раскрыты текстом');
     await shot('5-doc-embeds');
   });
 

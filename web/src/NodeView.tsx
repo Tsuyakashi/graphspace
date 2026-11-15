@@ -65,6 +65,9 @@ export function NodeView({ node }: { node: GNode }) {
             </button>
           )}
           {hasContent && node.head != null && <a className="btn" href={api.contentUrl(node.id, null, true)}>Скачать</a>}
+          {(node.type === 'doc' || node.type === 'space') && (
+            <a className="btn" href={api.exportUrl(node.id)} title={node.type === 'doc' ? 'Один md: вставки раскрыты текстом, как на экране' : 'Zip всей области раздела, открывается в Obsidian как хранилище'}>Экспорт</a>
+          )}
           {hasContent && <button className={showVersions ? 'on' : ''} onClick={() => setShowVersions((v) => !v)}>Версии{node.head ? ` · v${node.head}` : ''}</button>}
           <button title="Действия" onClick={(e) => app.menu(e, act.menuFor(node))}><Icon name="more" /></button>
         </div>

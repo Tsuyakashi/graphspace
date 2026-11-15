@@ -14,12 +14,12 @@ const freePort = () => new Promise((resolve, reject) => {
   s.listen(0, '127.0.0.1', () => { const { port } = s.address(); s.close(() => resolve(port)); });
 });
 
-export async function startServer({ seed = false } = {}) {
+export async function startServer({ seed = false, env = {} } = {}) {
   const data = fs.mkdtempSync(path.join(os.tmpdir(), 'graphspace-test-'));
   const port = await freePort();
   const child = spawn(process.execPath, ['server/index.mjs'], {
     cwd: ROOT, stdio: ['ignore', 'pipe', 'inherit'],
-    env: { ...process.env, PORT: String(port), HOST: '127.0.0.1', GRAPHSPACE_DATA: data, GRAPHSPACE_SEED: seed ? '1' : '0', GRAPHSPACE_DEMO: 'orbit', GRAPHSPACE_AUTHOR: 'test' },
+    env: { ...process.env, PORT: String(port), HOST: '127.0.0.1', GRAPHSPACE_DATA: data, GRAPHSPACE_SEED: seed ? '1' : '0', GRAPHSPACE_DEMO: 'orbit', AUTH_MODE: 'dev', AUTH_DEV_USER: 'test', ...env },
   });
   await new Promise((resolve, reject) => {
     child.once('exit', (code) => reject(new Error(`сервер не запустился, код ${code}`)));
@@ -30,8 +30,8 @@ export async function startServer({ seed = false } = {}) {
     base,
     async stop() { child.kill(); await new Promise((r) => child.once('exit', r)); fs.rmSync(data, { recursive: true, force: true }); },
     // JSON-запрос: возвращает статус и тело, не бросает на 4xx — тесты проверяют и отказы.
-    async call(method, url, body) {
-      const res = await fetch(base + url, { method, headers: body === undefined ? {} : { 'content-type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
+    async call(method, url, body, headers = {}) {
+      const res = await fetch(base + url, { method, headers: { ...headers, ...(body === undefined ? {} : { 'content-type': 'application/json' }) }, body: body === undefined ? undefined : JSON.stringify(body) });
       return { status: res.status, body: await res.json().catch(() => null) };
     },
     async put(id, bytes, baseVersion) {

@@ -52,6 +52,8 @@ export const api = {
   contentUrl: (id: string, v?: number | null, download = false) =>
     `/api/nodes/${id}/content?${v ? `v=${v}&` : ''}${download ? 'download' : ''}`,
 
+  exportUrl: (id: string) => `/api/nodes/${id}/export`,
+
   async content(id: string, v?: number | null): Promise<{ bytes: ArrayBuffer; version: number }> {
     const res = await fetch(api.contentUrl(id, v));
     if (!res.ok) throw new Error('содержимого нет');

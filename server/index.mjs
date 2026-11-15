@@ -1,7 +1,6 @@
 // Сервер Graphspace: API, события, раздача интерфейса и веб-сборок Craft с одного origin.
 import http from 'node:http';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { spawn, execFile } from 'node:child_process';
 import {
@@ -9,13 +8,14 @@ import {
   versions, getVersion, addVersion, nameVersion, headBytes, readBlob, blobFile, addLink, removeLink,
 } from './db.mjs';
 import { seedIfEmpty } from './seed.mjs';
+import { exportDoc, exportSpace } from './export.mjs';
+import { checkAuthConfig, userOf } from './auth.mjs';
 
 const PORT = Number(process.env.PORT || 4680);
 const HOST = process.env.HOST || '127.0.0.1';
 // Веб-сборки Craft: ./craft (ставит setup-craft.sh), иначе каталог из переменной.
 const CRAFT_DIR = process.env.GRAPHSPACE_CRAFT_DIR || path.join(ROOT, 'craft');
 const DIST = path.join(ROOT, 'web', 'dist');
-const AUTHOR = process.env.GRAPHSPACE_AUTHOR || os.userInfo().username;
 
 // Какое приложение Craft отвечает за расширение: веб-сборка (iframe) и нативный бинарник.
 const CRAFT_BY_EXT = {
@@ -28,7 +28,6 @@ const CRAFT_BY_EXT = {
 const onPath = (bin) => (process.env.PATH || '').split(path.delimiter).some((d) => fs.existsSync(path.join(d, bin)));
 const craftApps = [...new Set(Object.values(CRAFT_BY_EXT))];
 const config = {
-  author: AUTHOR,
   craftByExt: CRAFT_BY_EXT,
   web: Object.fromEntries(craftApps.map((a) => [a, fs.existsSync(path.join(CRAFT_DIR, a, 'index.html'))])),
   native: Object.fromEntries(craftApps.map((a) => [a, onPath(a)])),
@@ -45,7 +44,7 @@ function broadcast(event) {
 // ---------- нативное открытие: checkout → приложение → слежение за файлом → новая версия ----------
 const checkouts = new Map();
 const safeName = (s) => s.replace(/[\\/:*?"<>|\x00-\x1f]/g, '_');
-function openNative(node) {
+function openNative(node, user) {
   const app = CRAFT_BY_EXT[node.ext];
   if (!app || !config.native[app]) throw new HttpError(409, `нативное приложение для .${node.ext} не установлено`);
   const bytes = headBytes(node.id);
@@ -62,7 +61,7 @@ function openNative(node) {
     try {
       const fresh = fs.readFileSync(file);
       if (!fresh.length) return;
-      const r = addVersion(node.id, fresh, { author: `${AUTHOR} · ${app}` });
+      const r = addVersion(node.id, fresh, { author: `${user} · ${app}` });
       if (!r.unchanged) broadcast({ type: 'changed', id: node.id, reason: 'native-save' });
     } catch { /* файл в середине записи или уже удалён — следующий сигнал повторит */ }
   };
@@ -146,12 +145,12 @@ const readJson = async (req) => {
   try { return b.length ? JSON.parse(b.toString('utf8')) : {}; } catch { throw new HttpError(400, 'ожидался JSON'); }
 };
 
-async function api(req, res, url) {
+async function api(req, res, url, user) {
   const seg = url.pathname.split('/').filter(Boolean).slice(1); // без "api"
   const m = req.method;
   const changed = (id, reason) => broadcast({ type: 'changed', id, reason });
 
-  if (seg[0] === 'config' && m === 'GET') return json(res, config);
+  if (seg[0] === 'config' && m === 'GET') return json(res, { ...config, author: user });
   if (seg[0] === 'state' && m === 'GET') return json(res, { nodes: allNodes(), links: allLinks(), checkouts: [...checkouts.keys()] });
 
   if (seg[0] === 'events' && m === 'GET') {
@@ -199,7 +198,7 @@ async function api(req, res, url) {
     if (sub === 'content' && m === 'PUT') {
       const bytes = await readBody(req);
       const base = req.headers['x-base-version'] ?? null;
-      const r = addVersion(id, bytes, { author: AUTHOR, base: base === '' ? null : base });
+      const r = addVersion(id, bytes, { author: user, base: base === '' ? null : base });
       if (!r.unchanged) changed(id, r.conflict ? 'conflict' : 'saved');
       return json(res, r, r.conflict ? 409 : 200);
     }
@@ -212,21 +211,33 @@ async function api(req, res, url) {
     if (sub === 'versions' && seg[3] && seg[4] === 'restore' && m === 'POST') {
       const old = getVersion(id, Number(seg[3]));
       if (!old) throw new HttpError(404, 'версия не найдена');
-      const r = addVersion(id, readBlob(old.blob), { author: AUTHOR, name: `возврат к v${old.n}` });
+      const r = addVersion(id, readBlob(old.blob), { author: user, name: `возврат к v${old.n}` });
       changed(id, 'saved');
       return json(res, r);
     }
+    if (sub === 'export' && m === 'GET') {
+      const node = mustNode(id);
+      const { name, bytes } = node.type === 'space' ? exportSpace(id) : exportDoc(id, `http://${req.headers.host}`);
+      res.writeHead(200, { 'content-type': node.type === 'space' ? 'application/zip' : mime('md'), 'content-length': bytes.length, 'cache-control': 'no-store',
+        'content-disposition': `attachment; filename*=UTF-8''${encodeURIComponent(name)}` });
+      return res.end(bytes);
+    }
     if (sub === 'preview' && m === 'GET') return preview(mustNode(id), res);
-    if (sub === 'open-native' && m === 'POST') { const r = openNative(mustNode(id)); changed(id, 'native-open'); return json(res, r); }
+    if (sub === 'open-native' && m === 'POST') { const r = openNative(mustNode(id), user); changed(id, 'native-open'); return json(res, r); }
   }
   throw new HttpError(404, 'нет такого метода');
 }
 
+const authInfo = (() => { try { return checkAuthConfig(); } catch (e) { console.error(`Graphspace не запущен: ${e.message}`); process.exit(1); } })();
 if (process.env.GRAPHSPACE_SEED !== '0') seedIfEmpty();
 
-http.createServer((req, res) => {
+http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x');
-  if (url.pathname.startsWith('/api/')) return api(req, res, url).catch((e) => fail(res, e));
+  // Проверка живости для Docker: без входа и без данных.
+  if (url.pathname === '/healthz') { res.writeHead(200, { 'content-type': 'text/plain' }); return res.end('ok'); }
+  let user;
+  try { user = await userOf(req); } catch (e) { return fail(res, e); }
+  if (url.pathname.startsWith('/api/')) return api(req, res, url, user).catch((e) => fail(res, e));
   if (req.method !== 'GET' && req.method !== 'HEAD') return fail(res, new HttpError(405, 'метод не поддерживается'));
   if (url.pathname.startsWith('/craft/')) return serveStatic(res, CRAFT_DIR, url.pathname.slice('/craft'.length));
   if (!fs.existsSync(DIST)) return fail(res, new HttpError(503, 'интерфейс не собран: npm run build'));
@@ -234,6 +245,7 @@ http.createServer((req, res) => {
 }).listen(PORT, HOST, () => {
   console.log(`Graphspace: http://${HOST === '0.0.0.0' ? 'localhost' : HOST}:${PORT}`);
   console.log(`  данные: ${DATA}`);
+  console.log(`  вход: ${authInfo}`);
   console.log(`  Craft в вебе: ${Object.entries(config.web).filter(([, v]) => v).map(([k]) => k).join(', ') || 'нет'} (${CRAFT_DIR})`);
   console.log(`  Craft нативно: ${Object.entries(config.native).filter(([, v]) => v).map(([k]) => k).join(', ') || 'нет'}`);
 });
