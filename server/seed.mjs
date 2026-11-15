@@ -37,6 +37,8 @@ function boardJson() {
   });
 }
 
+// Без wordcraft-cli берём готовый docx из seed/, чтобы шаг с WordCraft в e2e работал на любой машине.
+const seedFile = (name) => { try { return fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'seed', name)); } catch { return null; } };
 function docx(markdown) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'graphspace-seed-'));
   try {
@@ -64,9 +66,10 @@ export function seedOrbit() {
 
 Бюджет и сроки — в брифе рядом.`);
   const brief = docx('# Бриф для подрядчика\n\nЦель: лендинг Orbit с формой раннего доступа.\n\n## Сроки\n\nДве недели от согласования макета.\n\n## Материалы\n\nЛоготип и фото лежат в бакете с ассетами.\n');
-  if (brief) {
+  const briefBytes = brief ?? seedFile('marketing-plan.docx');
+  if (briefBytes) {
     const b = createNode({ type: 'office', title: 'Бриф подрядчику', parent_id: mkt.id, ext: 'docx' });
-    addVersion(b.id, brief, { author: 'seed', name: 'отправлено подрядчику' });
+    addVersion(b.id, briefBytes, { author: 'seed', name: 'отправлено подрядчику' });
   }
   res('Ассеты', mkt, 's3', 'https://minio.home.arpa/browser/orbit-assets', 'Логотипы, фото, баннеры');
   const landing = space('Лендинг', mkt, 'аппка');
