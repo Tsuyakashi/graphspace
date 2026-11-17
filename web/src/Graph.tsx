@@ -3,9 +3,11 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { GNode } from './api';
 import { Icon, iconOf, iconPaths, useApp } from './ctx';
 import { useActions } from './actions';
-import { matches, pathOf, TYPE_LABEL, type Index } from './model';
+import { SHARED, matches, pathOf, TYPE_LABEL, type Index } from './model';
 
-const VROOT = '__all__';
+// Без корня — два виртуальных корня: свои проекты и разделы, которыми поделились другие.
+const VROOT = '__mine__', VSHARED = '__shared__';
+const VLABEL: Record<string, string> = { [VROOT]: 'Мои проекты', [VSHARED]: 'Доступно мне' };
 const ROW = 44, H = 30, GAP = 72;
 
 interface GN { id: string; node: GNode | null; layer: number; y: number; w: number; label: string; shared: boolean; hiddenKids: number }
@@ -15,16 +17,16 @@ const short = (s: string) => (s.length > 30 ? s.slice(0, 29) + '…' : s);
 const avg = (a: number[]) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : 0);
 
 function layout(ix: Index, rootId: string | null) {
-  const root = rootId ?? VROOT;
-  const kidsOf = (id: string) => (ix.kids.get(id === VROOT ? null : id) ?? []).map((k) => k.id);
-  const layer = new Map<string, number>([[root, 0]]);
+  const roots = rootId ? [rootId] : [VROOT, ...((ix.kids.get(SHARED) ?? []).length ? [VSHARED] : [])];
+  const kidsOf = (id: string) => (ix.kids.get(id === VROOT ? null : id === VSHARED ? SHARED : id) ?? []).map((k) => k.id);
+  const layer = new Map<string, number>(roots.map((r) => [r, 0]));
   const parent = new Map<string, string>();
   const order: string[] = [];
   const walk = (id: string) => { order.push(id); for (const k of kidsOf(id)) { layer.set(k, layer.get(id)! + 1); parent.set(k, id); walk(k); } };
-  walk(root);
+  roots.forEach(walk);
 
   // Ссылки: если цель уже в графе — только пунктирное ребро; если нет — цель добавляется рядом с тем, кто ссылается.
-  const edges: GE[] = order.filter((id) => id !== root).map((id) => ({ from: parent.get(id)!, to: id, uses: false }));
+  const edges: GE[] = order.filter((id) => !roots.includes(id)).map((id) => ({ from: parent.get(id)!, to: id, uses: false }));
   const outside = new Set<string>();
   for (const id of [...order]) {
     for (const t of ix.uses.get(id) ?? []) {
@@ -43,16 +45,26 @@ function layout(ix: Index, rootId: string | null) {
     let last = -Infinity;
     for (const id of list) { const v = Math.max(wanted.get(id)!, last + ROW); y.set(id, v); last = v; }
   };
-  // Вперёд — узел встаёт напротив родителя, назад — родитель центрируется по своим детям.
-  layers.forEach((list, li) => place(list, (id) => (li === 0 ? 0 : y.get(parent.get(id)!) ?? 0)));
-  for (let li = layers.length - 2; li >= 0; li--) {
-    place(layers[li], (id) => { const ks = order.filter((k) => parent.get(k) === id); return ks.length ? avg(ks.map((k) => y.get(k)!)) : y.get(id)!; });
+  // Каждый корень раскладывается своей полосой, полосы — одна под другой: деревья не переплетаются.
+  const rootOf = (id: string): string => (parent.has(id) ? rootOf(parent.get(id)!) : id);
+  let top = 0;
+  for (const r of roots) {
+    const band = layers.map((list) => list.filter((id) => rootOf(id) === r));
+    // Вперёд — узел встаёт напротив родителя, назад — родитель центрируется по своим детям.
+    band.forEach((list, li) => place(list, (id) => (li === 0 ? 0 : y.get(parent.get(id)!) ?? 0)));
+    for (let li = band.length - 2; li >= 0; li--) {
+      place(band[li], (id) => { const ks = order.filter((k) => parent.get(k) === id); return ks.length ? avg(ks.map((k) => y.get(k)!)) : y.get(id)!; });
+    }
+    const ids = band.flat();
+    const min = Math.min(...ids.map((id) => y.get(id)!)), max = Math.max(...ids.map((id) => y.get(id)!));
+    for (const id of ids) y.set(id, y.get(id)! - min + top);
+    top += max - min + ROW * 2;
   }
 
   const nodes = new Map<string, GN>();
   for (const id of order) {
-    const node = id === VROOT ? null : ix.byId.get(id)!;
-    const label = short(node ? node.title : 'Все проекты');
+    const node = VLABEL[id] ? null : ix.byId.get(id)!;
+    const label = short(node ? node.title : VLABEL[id]);
     nodes.set(id, {
       id, node, label, layer: layer.get(id)!, y: y.get(id)!, w: Math.max(96, 40 + label.length * 7.2),
       shared: !!node && (outside.has(id) || (ix.usedBy.get(id) ?? []).length > 0),
@@ -62,7 +74,7 @@ function layout(ix: Index, rootId: string | null) {
   const colX: number[] = [];
   let acc = 0;
   layers.forEach((list, li) => { colX[li] = acc; acc += Math.max(...list.map((id) => nodes.get(id)!.w)) + GAP; });
-  return { nodes, edges, colX, parent, root };
+  return { nodes, edges, colX, parent, roots };
 }
 
 export function GraphView() {
@@ -139,13 +151,13 @@ export function GraphView() {
             <g key={n.id} data-id={n.id} className={`gn ${n.node ? `t-${n.node.type}` : 'vroot'} ${n.shared ? 'shared' : ''} ${nav.sel === n.id ? 'sel' : ''} ${lit && !lit.has(n.id) ? 'dim' : ''}`}
               transform={`translate(${X(n)},${n.y - H / 2})`}
               onClick={() => { if (drag.current?.moved) return; n.node ? app.go({ sel: n.id }) : app.go({ root: null }); }}
-              onDoubleClick={() => { if (!n.node) return; hasKids(n.node) && n.id !== g.root ? app.go({ root: n.id }) : open(n.node); }}
+              onDoubleClick={() => { if (!n.node) return; hasKids(n.node) && !g.roots.includes(n.id) ? app.go({ root: n.id }) : open(n.node); }}
               onContextMenu={(e) => n.node && app.menu(e, act.menuFor(n.node))}>
-              <title>{n.node ? `${n.node.title} · ${pathOf(ix, n.id).slice(0, -1).map((p) => p.title).join(' / ') || 'верхний уровень'}` : 'Все проекты'}</title>
+              <title>{n.node ? `${n.node.title} · ${pathOf(ix, n.id).slice(0, -1).map((p) => p.title).join(' / ') || 'верхний уровень'}` : n.label}</title>
               <rect className="box" width={n.w} height={H} rx="7" />
               <rect className="stripe" width="4" height={H - 10} x="5" y="5" rx="2" />
               <g transform="translate(15,7)" className="gi" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
-                {iconPaths[n.node ? iconOf(n.node) : 'root'] ?? iconPaths.file}
+                {iconPaths[n.node ? iconOf(n.node) : n.id === VSHARED ? 'shared' : 'root'] ?? iconPaths.file}
               </g>
               <text x="37" y={H / 2}>{n.label}{n.hiddenKids ? `  +${n.hiddenKids}` : ''}</text>
             </g>
