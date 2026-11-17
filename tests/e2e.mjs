@@ -178,6 +178,12 @@ try {
     assert.equal(await page.locator('.menu button', { hasText: 'В корзину' }).count(), 0); // корень общего удаляет только владелец
     await page.keyboard.press('Escape');
     await shot('9-shared');
+    // Граф без корня: два виртуальных корня, свои проекты и доступные.
+    await page.goto(`${s.base}/?view=graph`);
+    await page.locator('.graph .gn.vroot', { hasText: 'Мои проекты' }).waitFor();
+    await page.locator('.graph .gn.vroot', { hasText: 'Доступно мне' }).waitFor();
+    assert.equal(await page.locator('.graph .gn > text', { hasText: 'Проект Алисы' }).count(), 1); // подпись узла, не путь в title
+    await shot('10-graph-shared');
   });
 
   const real = errors.filter((e) => !/subsetting/.test(e));
