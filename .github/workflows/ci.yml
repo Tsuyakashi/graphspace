@@ -1,0 +1,110 @@
+# test  — каждый push и PR (в т.ч. от Renovate): API, сборка, e2e с WordCraft.
+# image — push в main и теги v*: образ в GHCR с Craft внутри.
+# deploy-dispatch — только main: repository_dispatch в приватную graphspace-infrastructure,
+#   деплоит её self-hosted runner. Сюда self-hosted runner не подключать: репа публичная,
+#   PR из форка запустит на нём свой код.
+name: ci
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  IMAGE: ghcr.io/tsuyakashi/graphspace
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            web/package-lock.json
+
+      - run: npm ci && npm --prefix web ci
+      - run: npm run build
+      - run: npm test
+
+      - name: craft
+        run: ./setup-craft.sh
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: e2e
+        run: npm run test:e2e -- tests/shots
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: shots
+          path: tests/shots
+          if-no-files-found: ignore
+
+  image:
+    needs: test
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: craft
+        run: echo "label=graphspace.craft=$(jq -r 'to_entries | map("\(.key)@\(.value)") | join(",")' craft-versions.json)" >> "$GITHUB_OUTPUT"
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=sha,format=long,prefix=
+            type=semver,pattern={{version}}
+          labels: |
+            ${{ steps.craft.outputs.label }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          secrets: |
+            gh_token=${{ github.token }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy-dispatch:
+    needs: image
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      # Fine-grained PAT: только graphspace-infrastructure, Contents: read and write.
+      - run: |
+          gh api repos/Tsuyakashi/graphspace-infrastructure/dispatches \
+            -f event_type=deploy -f "client_payload[sha]=${{ github.sha }}"
+        env:
+          GH_TOKEN: ${{ secrets.INFRA_DISPATCH_TOKEN }}

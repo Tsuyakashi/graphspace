@@ -1,4 +1,5 @@
-# Деплой: docker compose up -d --build. Подробности — docs/deploy.md.
+# Локальный запуск образа: docker compose up -d --build. Прод — образ из GHCR, compose в graphspace-infrastructure.
+# Craft внутри образа (craft-versions.json), том ./craft не нужен.
 # Наружу Graphspace публикуется только через Cloudflare Tunnel + Access; cloudflared, DNS и политики настраиваются отдельно.
 # Порт только на loopback ВМ: к нему ходит cloudflared, запущенный на этой же ВМ. Наружу никаких портов на 0.0.0.0.
 services:
@@ -13,6 +14,5 @@ services:
       CF_ACCESS_AUD: ${CF_ACCESS_AUD:?Application Audience (AUD) Tag приложения в Access}
     volumes:
       - ./data:/data
-      - ./craft:/craft:ro
     ports:
       - "127.0.0.1:4680:4680"

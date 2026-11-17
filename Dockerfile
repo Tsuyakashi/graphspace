@@ -1,10 +1,21 @@
-# Graphspace: сервер без npm-зависимостей + собранный интерфейс. Craft монтируется томом в /craft.
+# syntax=docker/dockerfile:1
+# Graphspace: сервер без npm-зависимостей + собранный интерфейс + веб-сборки Craft.
+# Версии Craft — craft-versions.json; в CI они же попадают в label graphspace.craft.
+
 FROM node:24-slim AS web
 WORKDIR /app/web
 COPY web/package.json web/package-lock.json ./
 RUN npm ci --no-audit --no-fund
 COPY web/ ./
 RUN npm run build
+
+FROM debian:trixie-slim AS craft
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl jq unzip \
+ && rm -rf /var/lib/apt/lists/*
+WORKDIR /src
+COPY craft-versions.json setup-craft.sh ./
+# Токен необязателен (лимит API), в слои не попадает.
+RUN --mount=type=secret,id=gh_token,env=GITHUB_TOKEN ./setup-craft.sh
 
 FROM node:24-slim
 ENV NODE_ENV=production \
@@ -18,7 +29,8 @@ COPY package.json ./
 COPY server/ server/
 COPY seed/ seed/
 COPY --from=web /app/web/dist web/dist
-RUN mkdir -p /data /craft && chown node:node /data
+COPY --from=craft /src/craft /craft
+RUN mkdir -p /data && chown node:node /data
 USER node
 VOLUME /data
 EXPOSE 4680
