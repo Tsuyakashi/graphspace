@@ -9,7 +9,7 @@
 
 ```bash
 npm run setup        # зависимости и сборка интерфейса, один раз
-./setup-craft.sh     # веб-сборки Craft в ./craft (нужен gh); можно выборочно: ./setup-craft.sh wordcraft gridcraft
+./setup-craft.sh     # веб-сборки Craft в ./craft по craft-versions.json (curl, jq, unzip); выборочно: ./setup-craft.sh wordcraft
 AUTH_MODE=dev npm start   # http://127.0.0.1:4680, вход фиксированным пользователем
 ```
 
@@ -20,13 +20,13 @@ AUTH_MODE=dev npm start   # http://127.0.0.1:4680, вход фиксирован
 |---|---|---|
 | `PORT`, `HOST` | `4680`, `127.0.0.1` | Адрес сервера |
 | `GRAPHSPACE_DATA` | `./data` | База и блобы; резервная копия — этот каталог целиком |
-| `GRAPHSPACE_CRAFT_DIR` | `./craft` | Веб-сборки Craft, по каталогу на приложение |
+| `GRAPHSPACE_CRAFT_DIR` | `./craft` | Веб-сборки Craft, по каталогу на приложение. В образе — `/craft`, версии в `/craft/versions.json` |
 | `AUTH_MODE` | выключен | `dev` — без входа, все запросы от `AUTH_DEV_USER` (`dev@localhost`). Только для разработки |
 | `CF_ACCESS_TEAM_DOMAIN`, `CF_ACCESS_AUD` | — | Cloudflare Access: домен команды и AUD-тег. Без них и без `AUTH_MODE=dev` сервер не стартует |
 | `GRAPHSPACE_SEED` | включено | `0` — не создавать демо-проект |
 | `GRAPHSPACE_DEMO` | `personal` | Какой демо-набор создать: `personal` или `orbit` (на нём e2e-тесты) |
 
-Вход — только через Cloudflare Access: сервер проверяет JWT из `Cf-Access-Jwt-Assertion`, без него отвечает 401. Деплой на ВМ — `docs/deploy.md`.
+Вход — только через Cloudflare Access: сервер проверяет JWT из `Cf-Access-Jwt-Assertion`, без него отвечает 401. Сборка и деплой — `docs/deploy.md`.
 
 ## Что умеет
 

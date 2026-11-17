@@ -10,7 +10,7 @@
 - Сервер: `server/*.mjs`, Node 24 (работает и на 22.13+), `node:http` + `node:sqlite`, **без npm-зависимостей**.
 - Интерфейс: `web/`, React 18 + TypeScript + Vite. Сборка — `npm run build`, отдаёт сервер из `web/dist`.
 - Редакторы:
-  - Craft — веб-сборки в `./craft`, ставит `./setup-craft.sh`, в git не входят;
+  - Craft — веб-сборки в `./craft`, ставит `./setup-craft.sh` по версиям из `craft-versions.json` (их поднимает Renovate), в git не входят. В образ их кладёт тот же скрипт;
   - Excalidraw — npm-пакет.
 
 ## Решения, которые не пересматриваем без явного запроса

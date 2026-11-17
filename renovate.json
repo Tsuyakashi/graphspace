@@ -1,0 +1,23 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "enabledManagers": ["custom.regex"],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Веб-сборки Craft: storytold/<app>",
+      "managerFilePatterns": ["/^craft-versions\\.json$/"],
+      "matchStrings": ["\"(?<depName>[a-z]+craft)\":\\s*\"(?<currentValue>v[^\"]+)\""],
+      "datasourceTemplate": "github-releases",
+      "packageNameTemplate": "storytold/{{{depName}}}"
+    }
+  ],
+  "packageRules": [
+    {
+      "matchManagers": ["custom.regex"],
+      "commitMessageTopic": "Craft {{depName}}",
+      "automerge": true,
+      "automergeType": "pr"
+    }
+  ]
+}
