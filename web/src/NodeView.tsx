@@ -4,7 +4,7 @@ import { createPortal } from 'react-dom';
 import { api, type GNode, type Version } from './api';
 import { Icon, NodeIcon, openNode, useApp } from './ctx';
 import { useActions, RESOURCE_KINDS } from './actions';
-import { FILE_TYPES, fmtSize, fmtTime, matches, pathOf, scopeOf, TYPE_LABEL } from './model';
+import { FILE_TYPES, SHARED, fmtSize, fmtTime, matches, pathOf, scopeOf, TYPE_LABEL } from './model';
 import { Markdown } from './Markdown';
 import { CraftView } from './Craft';
 
@@ -14,6 +14,7 @@ export function Projects() {
   const app = useApp();
   const act = useActions();
   const projects = app.ix.kids.get(null) ?? [];
+  const shared = app.ix.kids.get(SHARED) ?? [];
   return (
     <div className="page">
       <h1>Проекты</h1>
@@ -26,6 +27,17 @@ export function Projects() {
         ))}
         <button className="card add" onClick={() => act.createIn(null, 'space')}><Icon name="plus" /><b>Новый проект</b></button>
       </div>
+      {shared.length > 0 && <>
+        <h2>Доступно мне</h2>
+        <div className="cards">
+          {shared.map((p) => (
+            <button key={p.id} className="card" onClick={() => app.go({ root: p.id })} onContextMenu={(e) => app.menu(e, act.menuFor(p))}>
+              <NodeIcon node={p} /><b>{p.title}</b>
+              <span className="muted">{p.owner} · узлов: {scopeOf(app.ix, p.id).length}</span>
+            </button>
+          ))}
+        </div>
+      </>}
     </div>
   );
 }

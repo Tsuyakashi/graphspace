@@ -1,11 +1,12 @@
 // Кто пришёл. Наружу Graphspace публикуется только через Cloudflare Tunnel + Access:
 // пользователь — из JWT в заголовке Cf-Access-Jwt-Assertion, подпись проверяется по JWKS команды.
-// Заголовку с почтой без проверки JWT не доверяем. AUTH_MODE=dev — фиксированный пользователь для разработки.
+// Заголовку с почтой без проверки JWT не доверяем. AUTH_MODE=dev — пользователь для разработки:
+// AUTH_DEV_USER или заголовок x-graphspace-dev-user (тесты доступа). Вне dev этот заголовок игнорируется.
 import crypto from 'node:crypto';
-import { HttpError } from './db.mjs';
+import { HttpError } from './errors.mjs';
 
 export const AUTH_MODE = process.env.AUTH_MODE === 'dev' ? 'dev' : 'cf';
-const DEV_USER = process.env.AUTH_DEV_USER || 'dev@localhost';
+export const DEV_USER = process.env.AUTH_DEV_USER || 'dev@localhost';
 // https://<team>.cloudflareaccess.com — это же значение iss в токене.
 const TEAM = (process.env.CF_ACCESS_TEAM_DOMAIN || '').replace(/\/+$/, '');
 const AUD = process.env.CF_ACCESS_AUD || '';
@@ -45,7 +46,10 @@ const deny = () => new HttpError(401, 'нужен вход через Cloudflare
 const part = (s) => JSON.parse(Buffer.from(s, 'base64url').toString('utf8'));
 
 export async function userOf(req) {
-  if (AUTH_MODE === 'dev') return DEV_USER;
+  if (AUTH_MODE === 'dev') {
+    const h = req.headers['x-graphspace-dev-user'];
+    return (typeof h === 'string' && h.trim() ? h : DEV_USER).trim().toLowerCase();
+  }
   const token = req.headers['cf-access-jwt-assertion'];
   if (typeof token !== 'string') throw deny();
   const [h, p, sig] = token.split('.');
@@ -62,6 +66,6 @@ export async function userOf(req) {
   if (typeof claims.nbf === 'number' && claims.nbf > now + SKEW) throw deny();
   // Человек — email; сервисный токен Access — common_name (Client ID).
   const user = claims.email || claims.common_name;
-  if (!user) throw deny();
-  return user;
+  if (typeof user !== 'string' || !user) throw deny();
+  return user.trim().toLowerCase();
 }

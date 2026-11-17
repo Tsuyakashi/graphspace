@@ -3,28 +3,33 @@
 Личная платформа для проектов: доки, схемы, офисные файлы и ссылки на инфраструктуру в одном каталоге узлов.
 Платформа хранит, связывает и показывает; редактируют Craft-приложения и Excalidraw.
 
-Сейчас это МВП для одного пользователя: прод на https://graphspace.workd.online за Cloudflare Access,
-локально — `AUTH_MODE=dev`.
+Прод — https://graphspace.workd.online за Cloudflare Access. У каждого пользователя своё пространство,
+разделом можно поделиться с другим. Локально — `AUTH_MODE=dev`.
 
 ## Запуск
 
 ```bash
-npm run setup        # зависимости и сборка интерфейса, один раз
-./setup-craft.sh     # веб-сборки Craft в ./craft по craft-versions.json (curl, jq, unzip); выборочно: ./setup-craft.sh wordcraft
-AUTH_MODE=dev npm start   # http://127.0.0.1:4680, вход фиксированным пользователем
+npm run setup                     # зависимости и сборка интерфейса, один раз
+./setup-craft.sh                  # веб-сборки Craft в ./craft по craft-versions.json (curl, jq, unzip); выборочно: ./setup-craft.sh wordcraft
+cp .env.example .env              # AUTH_MODE=dev и адреса локальных Postgres и S3
+docker compose up -d              # Postgres 18 и S3 (SILO) на loopback
+npm start                         # http://127.0.0.1:4680, вход фиксированным пользователем
 ```
 
-Нужен Node 24 или новее: сервер использует встроенный `node:sqlite` и не имеет зависимостей.
-При первом запуске создаётся демо-набор «Personal project #1» (`server/demo-personal.mjs`, файлы в `seed/`). Без Craft всё работает, кроме редактирования офисных файлов, PDF и макетов.
+Нужен Node 24 или новее. Серверная зависимость одна — `pg`.
+В режиме разработки пустому пространству создаётся демо-набор «Personal project #1» (`server/demo-personal.mjs`, файлы в `seed/`). Без Craft всё работает, кроме редактирования офисных файлов, PDF и макетов.
 
 | Переменная | По умолчанию | Смысл |
 |---|---|---|
 | `PORT`, `HOST` | `4680`, `127.0.0.1` | Адрес сервера |
-| `GRAPHSPACE_DATA` | `./data` | База и блобы; резервная копия — этот каталог целиком |
+| `DATABASE_URL` | — | Postgres: узлы, связи, версии, доступ. Пароль можно отдельно: `DATABASE_PASSWORD` или `DATABASE_PASSWORD_FILE` |
+| `S3_ENDPOINT`, `S3_BUCKET`, `S3_REGION` | —, `graphspace`, `us-east-1` | Блобы (содержимое версий) по sha256, path-style. Бакет сервер создаёт сам |
+| `S3_ACCESS_KEY`, `S3_SECRET_KEY` | — | Ключи S3; секрет можно файлом: `S3_SECRET_KEY_FILE` |
+| `GRAPHSPACE_DATA` | `./data` | Только кэш превью и нативное открытие; данных там нет |
 | `GRAPHSPACE_CRAFT_DIR` | `./craft` | Веб-сборки Craft, по каталогу на приложение. В образе — `/craft`, версии в `/craft/versions.json` |
-| `AUTH_MODE` | выключен | `dev` — без входа, все запросы от `AUTH_DEV_USER` (`dev@localhost`). Только для разработки |
+| `AUTH_MODE` | выключен | `dev` — без входа, все запросы от `AUTH_DEV_USER` (`dev@localhost`) или от заголовка `x-graphspace-dev-user`. Только для разработки |
 | `CF_ACCESS_TEAM_DOMAIN`, `CF_ACCESS_AUD` | — | Cloudflare Access: домен команды и AUD-тег. Без них и без `AUTH_MODE=dev` сервер не стартует |
-| `GRAPHSPACE_SEED` | включено | `0` — не создавать демо-проект |
+| `GRAPHSPACE_SEED` | включено | `0` — не создавать демо-проект (только в `AUTH_MODE=dev`) |
 | `GRAPHSPACE_DEMO` | `personal` | Какой демо-набор создать: `personal` или `orbit` (на нём e2e-тесты) |
 
 Вход — только через Cloudflare Access: сервер проверяет JWT из `Cf-Access-Jwt-Assertion`, без него отвечает 401. Сборка и деплой — `docs/deploy.md`.
@@ -41,6 +46,7 @@ AUTH_MODE=dev npm start   # http://127.0.0.1:4680, вход фиксирован
 - **Версии.** Сохранение не перезаписывает: каждое создаёт версию. Версия с именем — снапшот. Правка поверх устаревшей версии ложится рядом как конфликтная.
 - **Редакторы.** docx, xlsx, pptx, pdf, fig — веб-сборки Craft в iframe по протоколу `ready / open / save / dirty`. Схемы — Excalidraw. Экспорт в другой формат ложится рядом отдельным узлом.
 - **Открыть нативно.** Сервер выгружает файл, запускает установленное приложение Craft и превращает каждое сохранение в версию. Работает, когда сервер и рабочий стол — одна машина.
+- **Пространства и доступ.** У каждого пользователя своё дерево. Владелец открывает раздел другому («Поделиться…»): всё внутри, на правку. У получателя он в «Доступно мне». Удалить и перенести корень общего раздела, вынести узел наверх и делиться дальше может только владелец. Перенос между пространствами запрещён. Чужое и несуществующее неотличимы: 404, вставка чужого узла — «не найден».
 - **Остальное.** Загрузка файлов и перенос узлов перетаскиванием, быстрый переход по Ctrl+K, корзина с возвратом, живое обновление открытых вкладок.
 
 ## Проверка
@@ -50,13 +56,14 @@ npm test             # API: вложенность, перенос, версии
 npm run test:e2e     # браузер: дерево, виды, граф, вставки, правка дока, схемы и docx
 ```
 
-Сквозному тесту нужны собранный интерфейс и Chrome (`CHROME=/путь`, по умолчанию `/usr/bin/google-chrome`). Шаг с WordCraft пропускается, если сборки нет (`./setup-craft.sh wordcraft`). Вторым аргументом можно передать каталог для скриншотов: `node tests/e2e.mjs tests/shots`.
+Тестам нужны Postgres (`TEST_DATABASE_URL` — админское подключение, по умолчанию `postgres://postgres@127.0.0.1:5432/postgres`; каждый запуск сервера — своя временная база) и S3 (`S3_ENDPOINT`, `S3_ACCESS_KEY`, `S3_SECRET_KEY`; бакет на запуск). Сквозному тесту нужны ещё собранный интерфейс и Chrome (`CHROME=/путь`, по умолчанию `/usr/bin/google-chrome`). Шаг с WordCraft пропускается, если сборки нет (`./setup-craft.sh wordcraft`). Вторым аргументом можно передать каталог для скриншотов: `node tests/e2e.mjs tests/shots`.
 
 ## Устройство
 
 | Файл | Что в нём |
 |---|---|
-| `server/db.mjs` | Узлы, связи, версии, блобы по sha256 |
+| `server/db.mjs` | Postgres: узлы, связи, версии, владельцы и доступ; блобы по sha256 |
+| `server/s3.mjs` | Клиент S3 на четыре запроса, подпись SigV4 без SDK |
 | `server/index.mjs` | API, события, раздача интерфейса и Craft с одного origin, нативное открытие, превью docx |
 | `server/auth.mjs` | Кто пришёл: JWT Cloudflare Access или `AUTH_MODE=dev` |
 | `server/export.mjs` | Экспорт: док одним md, раздел zip-архивом |
@@ -68,16 +75,15 @@ npm run test:e2e     # браузер: дерево, виды, граф, вст�
 | `web/src/Markdown.tsx` | Док и вставки |
 | `web/src/Board.tsx`, `web/src/Craft.tsx` | Excalidraw и мост Craft |
 
-Модель: `nodes(id, type, title, parent_id, props, ext, head)`, `links(from_id, to_id, kind)` с видами `uses`, `embeds`, `mentions`, `versions(node_id, n, blob, name)`.
+Модель: `nodes(id, type, title, parent_id, props, ext, head, owner)`, `links(from_id, to_id, kind)` с видами `uses`, `embeds`, `mentions`, `versions(node_id, n, blob, author, name)`, `shares(node_id, email)`, `users(email)`. Владелец узла — владелец корня его дерева.
 
 Разработка интерфейса: `npm start` в одном терминале и `npm run dev` в другом, адрес `http://localhost:4681`.
 
 ## Чего пока нет
 
-- Прав на проекты: все, кого пустил Access, видят и правят всё.
 - WebDAV и десктопного клиента; офлайна.
 - Полнотекстового поиска: Ctrl+K ищет по именам и путям.
 - Живого состояния внешних ресурсов: для git, S3 и registry хранятся только ссылка и заметка.
-- Postgres и объектного хранилища: SQLite и каталог на диске.
+- Ролей доступа: открытый раздел всегда на правку, только чтения нет.
 
 Замысел и исходный запрос — в `docs/`, планы — в `docs/backlog.md`, правила для агентов — в `CLAUDE.md`.

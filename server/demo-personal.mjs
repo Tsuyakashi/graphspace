@@ -5,6 +5,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { ROOT, createNode, addVersion, addLink } from './db.mjs';
 
+let OWNER;
+
 const SEED = path.join(ROOT, 'seed');
 const file = (name) => (fs.existsSync(path.join(SEED, name)) ? fs.readFileSync(path.join(SEED, name)) : null);
 const text = (s) => Buffer.from(s.trim() + '\n');
@@ -33,54 +35,55 @@ function scene(boxes, arrows) {
     appState: { viewBackgroundColor: '#ffffff' }, files: {} }));
 }
 
-const space = (title, parent, label) => createNode({ type: 'space', title, parent_id: parent?.id ?? null, props: { label } });
-const res = (title, parent, kind, url, note = '') => createNode({ type: 'resource', title, parent_id: parent.id, props: { kind, url, note } });
-const put = (node, bytes) => { if (bytes) addVersion(node.id, bytes, { author: 'seed' }); return node; };
-const doc = (title, parent, body) => put(createNode({ type: 'doc', title, parent_id: parent.id, ext: 'md' }), body == null ? null : text(body));
-const office = (title, parent, ext) => put(createNode({ type: 'office', title, parent_id: parent.id, ext }), file(title));
+const space = async (title, parent, label) => await createNode(OWNER, { type: 'space', title, parent_id: parent?.id ?? null, props: { label } });
+const res = async (title, parent, kind, url, note = '') => await createNode(OWNER, { type: 'resource', title, parent_id: parent.id, props: { kind, url, note } });
+const put = async (node, bytes) => { if (bytes) await addVersion(OWNER, node.id, bytes, { author: 'seed' }); return node; };
+const doc = async (title, parent, body) => put(await createNode(OWNER, { type: 'doc', title, parent_id: parent.id, ext: 'md' }), body == null ? null : text(body));
+const office = async (title, parent, ext) => put(await createNode(OWNER, { type: 'office', title, parent_id: parent.id, ext }), file(title));
 
-export function seedPersonal() {
-  const p1 = space('Personal project #1', null, 'проект');
+export async function seedPersonal(owner) {
+  OWNER = owner;
+  const p1 = await space('Personal project #1', null, 'проект');
 
   // marketing
-  const mk = space('marketing', p1, 'направление');
-  const landing = space('landing', mk, 'аппка');
-  const marketingMd = doc('marketing.md', mk, `
+  const mk = await space('marketing', p1, 'направление');
+  const landing = await space('landing', mk, 'аппка');
+  const marketingMd = await doc('marketing.md', mk, `
 ## Marketing
 
 Запуск лендинга, каналы и бюджет. План — в **marketing-plan.docx**, цифры — в **budget.xlsx**.`);
-  office('marketing-plan.docx', mk, 'docx');
-  office('budget.xlsx', mk, 'xlsx');
-  office('pitch.pptx', mk, 'pptx');
-  doc('landing.md', landing, '### landing\n\nАппка внутри маркетинга: узлы универсальны, вложенность любая.');
-  res('lombel-landing', landing, 'git', 'https://github.com/Tsuyakashi/lombel-landing');
+  await office('marketing-plan.docx', mk, 'docx');
+  await office('budget.xlsx', mk, 'xlsx');
+  await office('pitch.pptx', mk, 'pptx');
+  await doc('landing.md', landing, '### landing\n\nАппка внутри маркетинга: узлы универсальны, вложенность любая.');
+  await res('lombel-landing', landing, 'git', 'https://github.com/Tsuyakashi/lombel-landing');
 
   // dev
-  const dev = space('dev', p1, 'направление');
-  const infra = space('infra', dev, 'инфра');
-  const app1 = space('app1', dev, 'аппка');
-  const app2 = space('app2', dev, 'аппка');
-  const app3 = space('app3', dev, 'аппка');
-  const devMd = doc('dev.md', dev); // текст ниже, когда известны id встраиваемых доков
-  put(createNode({ type: 'board', title: 'architecture.excalidraw', parent_id: dev.id, ext: 'excalidraw' }), scene(
+  const dev = await space('dev', p1, 'направление');
+  const infra = await space('infra', dev, 'инфра');
+  const app1 = await space('app1', dev, 'аппка');
+  const app2 = await space('app2', dev, 'аппка');
+  const app3 = await space('app3', dev, 'аппка');
+  const devMd = await doc('dev.md', dev); // текст ниже, когда известны id встраиваемых доков
+  await put(await createNode(OWNER, { type: 'board', title: 'architecture.excalidraw', parent_id: dev.id, ext: 'excalidraw' }), scene(
     [{ id: 'infra', label: 'infra', x: 0, y: 120, bg: '#b2f2bb' }, { id: 'app1', label: 'app1', x: 260, y: 0 },
      { id: 'app2', label: 'app2', x: 260, y: 120 }, { id: 'app3', label: 'app3', x: 260, y: 240 },
      { id: 'reg', label: 'shared registry', x: 520, y: 180, bg: '#ffd8a8' }],
     [['infra', 'app1'], ['infra', 'app2'], ['infra', 'app3'], ['app2', 'reg'], ['app3', 'reg']]));
 
-  const infraMd = doc('infra.md', infra, '### infra\n\nProxmox + Terraform. Артефакты в S3, образы в registry.');
-  res('dev-assets', infra, 's3', 'http://minio.lab:9000/dev-assets', 'endpoint http://minio.lab:9000, bucket dev-assets');
-  res('iac-proxmox-lab', infra, 'git', 'https://github.com/Tsuyakashi/iac-proxmox-lab');
+  const infraMd = await doc('infra.md', infra, '### infra\n\nProxmox + Terraform. Артефакты в S3, образы в registry.');
+  await res('dev-assets', infra, 's3', 'http://minio.lab:9000/dev-assets', 'endpoint http://minio.lab:9000, bucket dev-assets');
+  await res('iac-proxmox-lab', infra, 'git', 'https://github.com/Tsuyakashi/iac-proxmox-lab');
 
-  const app1Md = doc('app1.md', app1, '### app1\n\nСвой registry, своя дока.');
-  res('app1-registry', app1, 'registry', 'ghcr.io/tsuyakashi/app1');
+  const app1Md = await doc('app1.md', app1, '### app1\n\nСвой registry, своя дока.');
+  await res('app1-registry', app1, 'registry', 'ghcr.io/tsuyakashi/app1');
 
-  doc('app2.md', app2, '### app2\n\nДелит registry с app3.');
-  const shared = res('shared registry', app2, 'registry', 'ghcr.io/tsuyakashi/shared', 'Общий: дом в app2, им же пользуется app3');
-  doc('app3.md', app3, '### app3\n\nДелит registry с app2.');
-  addLink(app3.id, shared.id, 'uses'); // в прототипе — второй родитель, здесь — ссылка
+  await doc('app2.md', app2, '### app2\n\nДелит registry с app3.');
+  const shared = await res('shared registry', app2, 'registry', 'ghcr.io/tsuyakashi/shared', 'Общий: дом в app2, им же пользуется app3');
+  await doc('app3.md', app3, '### app3\n\nДелит registry с app2.');
+  await addLink(OWNER, app3.id, shared.id, 'uses'); // в прототипе — второй родитель, здесь — ссылка
 
-  put(devMd, text(`
+  await put(devMd, text(`
 ## Dev
 
 Общий текст по разработке. Подчасти:
@@ -89,7 +92,7 @@ export function seedPersonal() {
 
 ![[${app1Md.id}]]`));
 
-  doc('README.md', p1, `
+  await doc('README.md', p1, `
 # Personal project #1
 
 Обобщённое описание проекта. Ниже — доки направлений, встроенные по ссылке (не копии):
@@ -98,7 +101,7 @@ export function seedPersonal() {
 
 ![[${devMd.id}]]`);
 
-  const p2 = space('Personal project #2', null, 'проект');
-  doc('notes.md', p2, '# Personal project #2\n\nПусто — место для нового.');
-  space('co-op project #1', null, 'проект');
+  const p2 = await space('Personal project #2', null, 'проект');
+  await doc('notes.md', p2, '# Personal project #2\n\nПусто — место для нового.');
+  await space('co-op project #1', null, 'проект');
 }
