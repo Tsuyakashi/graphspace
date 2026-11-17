@@ -1,5 +1,6 @@
 # syntax=docker/dockerfile:1
-# Graphspace: сервер без npm-зависимостей + собранный интерфейс + веб-сборки Craft.
+# Graphspace: сервер (одна зависимость — pg) + собранный интерфейс + веб-сборки Craft.
+# Данные — в Postgres и S3, в контейнере только кэш превью.
 # Версии Craft — craft-versions.json; в CI они же попадают в label graphspace.craft.
 
 FROM node:24-slim AS web
@@ -25,14 +26,14 @@ ENV NODE_ENV=production \
     GRAPHSPACE_CRAFT_DIR=/craft \
     GRAPHSPACE_SEED=0
 WORKDIR /app
-COPY package.json ./
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev --no-audit --no-fund && npm cache clean --force
 COPY server/ server/
 COPY seed/ seed/
 COPY --from=web /app/web/dist web/dist
 COPY --from=craft /src/craft /craft
 RUN mkdir -p /data && chown node:node /data
 USER node
-VOLUME /data
 EXPOSE 4680
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s \
   CMD node -e "fetch('http://127.0.0.1:4680/healthz').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"

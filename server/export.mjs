@@ -4,6 +4,8 @@ import path from 'node:path';
 import zlib from 'node:zlib';
 import { allNodes, allLinks, getVersion, versions, readBlob, mustNode, HttpError } from './db.mjs';
 
+const blobOf = async (id, n) => readBlob((await getVersion(id, n)).blob);
+
 // Те же правила, что у клиента (web/src/Markdown.tsx): вставка — целая строка, остальное — упоминания.
 const EMBED_LINE = /^\s*!\[\[([a-z0-9]{6,})(?:@([^\]|]*))?(?:\|([^\]]*))?\]\]\s*$/;
 const MENTION = /!?\[\[([a-z0-9]{6,})(?:@[^\]|]*)?(?:\|[^\]]*)?\]\]/g;
@@ -21,13 +23,14 @@ const matches = (n, f) => {
 const clean = (s) => s.replace(/[\\/:*?"<>|\x00-\x1f#^[\]]/g, '_').trim() || '_';
 
 // Индекс каталога и область узла — как buildIndex и scopeOf в web/src/model.ts.
-function catalog() {
-  const nodes = allNodes();
+// Только то, что видит пользователь: чужое в выгрузке — «узел не найден», как удалённое.
+async function catalog(user) {
+  const nodes = await allNodes(user);
   const byId = new Map(nodes.map((n) => [n.id, n]));
   const kids = new Map();
   for (const n of nodes) kids.set(n.parent_id, [...(kids.get(n.parent_id) ?? []), n]);
   const uses = new Map();
-  for (const l of allLinks()) if (l.kind === 'uses') uses.set(l.from_id, [...(uses.get(l.from_id) ?? []), l.to_id]);
+  for (const l of await allLinks(user)) if (l.kind === 'uses') uses.set(l.from_id, [...(uses.get(l.from_id) ?? []), l.to_id]);
 
   // Область узла — как scopeOf в web/src/model.ts: потомки, затем то, чем они пользуются по ссылке.
   const scopeOf = (rootId) => {
@@ -47,18 +50,18 @@ function catalog() {
   return { byId, scopeOf };
 }
 const optsOf = (raw) => Object.fromEntries((raw ?? '').split(',').map((s) => s.split('=').map((x) => x.trim())).filter((p) => p.length === 2));
-const resolvePin = (n, pin) => {
-  if (/^\d+$/.test(pin)) return getVersion(n.id, Number(pin)) ? Number(pin) : null;
-  return versions(n.id).find((v) => v.name === pin)?.n ?? null;
+const resolvePin = async (n, pin) => {
+  if (/^\d+$/.test(pin)) return (await getVersion(n.id, Number(pin))) ? Number(pin) : null;
+  return (await versions(n.id)).find((v) => v.name === pin)?.n ?? null;
 };
 const IMAGE = /^(png|jpe?g|gif|webp|svg)$/i;
 
 // ---------- док одним файлом ----------
 // origin — адрес Graphspace: то, что нельзя раскрыть текстом, становится ссылкой на узел.
-export function exportDoc(rootId, origin) {
-  const root = mustNode(rootId);
+export async function exportDoc(user, rootId, origin) {
+  const root = await mustNode(rootId, user);
   if (root.type !== 'doc') throw new HttpError(400, 'одним файлом выгружается только док');
-  const { byId, scopeOf } = catalog();
+  const { byId, scopeOf } = await catalog(user);
   const url = (n) => `${origin}/?sel=${n.id}`;
   const esc = (t) => t.replace(/([[\]*_`])/g, '\\$1');
   const where = (n) => {
@@ -73,27 +76,27 @@ export function exportDoc(rootId, origin) {
   };
 
   // Одна вставка в виде блока markdown. chain — цепочка доков, чтобы оборвать цикл.
-  const embed = (n, pin, depth, chain) => {
+  const embed = async (n, pin, depth, chain) => {
     if (n.type === 'doc') {
       if (chain.includes(n.id)) return frame(n, 'ссылается сама на себя');
-      const v = pin ? resolvePin(n, pin) : n.head;
+      const v = pin ? await resolvePin(n, pin) : n.head;
       if (pin && !v) return frame(n, `нет снапшота «${pin}»`);
-      const text = v ? readBlob(getVersion(n.id, v).blob).toString('utf8') : '';
-      return frame(n, [where(n), pin && `снапшот «${pin}»`].filter(Boolean).join(' · '), render(text, depth + 1, [...chain, n.id]));
+      const text = v ? (await blobOf(n.id, v)).toString('utf8') : '';
+      return frame(n, [where(n), pin && `снапшот «${pin}»`].filter(Boolean).join(' · '), await render(text, depth + 1, [...chain, n.id]));
     }
     if (n.type === 'resource') {
       const link = n.props.url ? ` — ${n.props.url}` : '';
       return frame(n, `${n.props.kind ?? 'ресурс'}${link}${n.props.note ? `. ${n.props.note}` : ''}`);
     }
     if (n.type === 'file' && IMAGE.test(n.ext ?? '') && n.head) {
-      const bytes = readBlob(getVersion(n.id, n.head).blob);
+      const bytes = await blobOf(n.id, n.head);
       const type = n.ext === 'svg' ? 'image/svg+xml' : `image/${n.ext.toLowerCase().replace('jpg', 'jpeg')}`;
       return frame(n, where(n), `![${esc(n.title)}](data:${type};base64,${bytes.toString('base64')})`);
     }
     return frame(n, `${n.type === 'board' ? 'схема' : n.ext ?? n.type} — открыть в Graphspace`);
   };
 
-  const render = (text, depth, chain) => {
+  const render = async (text, depth, chain) => {
     const out = [];
     let fence = false;
     // Самый крупный заголовок вставленного дока становится уровнем depth + 1, остальные — относительно него.
@@ -119,23 +122,25 @@ export function exportDoc(rootId, origin) {
       else if (opts.type || n.type === 'space') {
         const f = parseFilter(opts.type ?? '');
         const items = scopeOf(n.id).filter((x) => (f ? matches(x, f) : x.type !== 'space'));
-        blocks = items.length ? items.map((x) => embed(x, null, depth, chain)) : [`> В «${esc(n.title)}» пока нет подходящих узлов`];
-      } else blocks = [embed(n, pin?.trim() || null, depth, chain)];
+        blocks = [];
+        for (const x of items) blocks.push(await embed(x, null, depth, chain));
+        if (!blocks.length) blocks = [`> В «${esc(n.title)}» пока нет подходящих узлов`];
+      } else blocks = [await embed(n, pin?.trim() || null, depth, chain)];
       // Пустые строки вокруг: иначе соседние цитаты склеятся в одну.
       out.push('', blocks.join('\n\n'), '');
     }
     return out.join('\n').replace(/\n{3,}/g, '\n\n').trim();
   };
 
-  const text = root.head ? readBlob(getVersion(root.id, root.head).blob).toString('utf8') : '';
+  const text = root.head ? (await blobOf(root.id, root.head)).toString('utf8') : '';
   const base = root.title.toLowerCase().endsWith('.md') ? root.title : `${root.title}.md`;
-  return { name: base, bytes: Buffer.from(render(text, 0, [root.id]) + '\n') };
+  return { name: base, bytes: Buffer.from((await render(text, 0, [root.id])) + '\n') };
 }
 
 // ---------- раздел zip-архивом ----------
-export function exportSpace(rootId) {
-  const root = mustNode(rootId);
-  const { byId, scopeOf } = catalog();
+export async function exportSpace(user, rootId) {
+  const root = await mustNode(rootId, user);
+  const { byId, scopeOf } = await catalog(user);
 
   const dirOf = (n) => {
     const parts = [];
@@ -165,7 +170,7 @@ export function exportSpace(rootId) {
     queue.push({ n, v, path: p });
     return p;
   };
-  const rewrite = (text, from) => {
+  const rewrite = async (text, from) => {
     const out = [];
     let fence = false;
     const link = (id) => {
@@ -189,7 +194,7 @@ export function exportSpace(rootId) {
         out.push(...(items.length ? items.map((p) => `![[${p}]]`) : [`> В «${n.title}» пока нет подходящих узлов`]));
         continue;
       }
-      const v = pin?.trim() ? resolvePin(n, pin.trim()) : null;
+      const v = pin?.trim() ? await resolvePin(n, pin.trim()) : null;
       if (pin?.trim() && !v) { out.push(`> У «${n.title}» нет снапшота «${pin.trim()}»`); continue; }
       const p = want(n, v, v ? pin.trim() : null);
       out.push(p ? `![[${p}]]` : `> «${n.title}»: содержимого нет`);
@@ -209,8 +214,8 @@ export function exportSpace(rootId) {
       entries.push({ name: p, data: Buffer.from(lines.join('\n') + '\n') });
       continue;
     }
-    const bytes = readBlob(getVersion(n.id, v ?? n.head).blob);
-    entries.push({ name: p, data: n.type === 'doc' ? Buffer.from(rewrite(bytes.toString('utf8'), p)) : bytes });
+    const bytes = await blobOf(n.id, v ?? n.head);
+    entries.push({ name: p, data: n.type === 'doc' ? Buffer.from(await rewrite(bytes.toString('utf8'), p)) : bytes });
   }
   const base = clean(root.title).replace(/\.md$/i, '');
   return { name: `${base}.zip`, bytes: zip(entries) };

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, type Config, type GNode, type State } from './api';
 import { AppCtx, AskDialog, Icon, Menu, NodeIcon, Palette, Toasts, openNode, useApp, type Ctx, type Field, type MenuItem, type Nav, type ToastItem } from './ctx';
-import { buildIndex, matches, pathOf, scopeOf, treeRows, type Row } from './model';
+import { SHARED, buildIndex, isShareRoot, matches, pathOf, scopeOf, treeRows, type Row } from './model';
 import { useActions } from './actions';
 import { NodeView, Projects } from './NodeView';
 import { GraphView } from './Graph';
@@ -120,6 +120,8 @@ function Sidebar() {
     .filter((c) => !c.f || c.count > 0 || c.f === nav.type);
 
   const rows = useMemo(() => treeRows(ix, nav.root, nav.type, collapsed), [ix, nav.root, nav.type, collapsed]);
+  // Без корня ниже своего — то, чем поделились другие.
+  const sharedRows = useMemo(() => (nav.root ? [] : treeRows(ix, SHARED, nav.type, collapsed)), [ix, nav.root, nav.type, collapsed]);
   const flat = useMemo(() => scope.filter((s) => (nav.type ? matches(s.node, nav.type) : s.node.type !== 'space')), [scope, nav.type]);
 
   const toggle = (id: string) => setCollapsed((c) => {
@@ -174,7 +176,11 @@ function Sidebar() {
         {nav.show === 'tree'
           ? rows.map((r) => <TreeRow key={r.node.id + (r.via ?? '')} row={r} toggle={toggle} />)
           : flat.map((s) => <TreeRow key={s.node.id} row={{ node: s.node, depth: 0, via: s.via }} toggle={toggle} flatRoot={nav.root} />)}
-        {(nav.show === 'tree' ? rows.length : flat.length) === 0 && (
+        {nav.show === 'tree' && sharedRows.length > 0 && <>
+          <div className="tree-sep">Доступно мне</div>
+          {sharedRows.map((r) => <TreeRow key={'s' + r.node.id + (r.via ?? '')} row={r} toggle={toggle} />)}
+        </>}
+        {(nav.show === 'tree' ? rows.length + sharedRows.length : flat.length) === 0 && (
           <div className="empty">{nav.type ? 'В этой области таких узлов нет' : root ? 'Пусто. Создайте что-нибудь кнопкой выше.' : 'Проектов пока нет'}</div>
         )}
       </div>
@@ -221,6 +227,7 @@ function TreeRow({ row, toggle, flatRoot }: { row: Row; toggle: (id: string) => 
       <NodeIcon node={node} />
       <span className="title">{node.title}</span>
       {isSpace && node.props.label && <span className="label">{node.props.label}</span>}
+      {isShareRoot(app.ix, node) && <span className="label where" title="Владелец">{node.owner}</span>}
       {node.type === 'resource' && node.props.kind && <span className="label">{node.props.kind}</span>}
       {where && <span className="label where">{where}</span>}
       {via && <span className="badge" title="Общий узел: показан ссылкой, дом в другом месте"><Icon name="shared" />общий</span>}

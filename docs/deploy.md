@@ -2,7 +2,7 @@
 
 Наружу Graphspace публикуется только через Cloudflare Tunnel + Cloudflare Access. На сервере
 нет reverse-proxy, TLS и своей аутентификации; порт `4680` — только на loopback, к нему ходит
-`cloudflared` на той же машине.
+`cloudflared` на той же машине. Рядом в том же compose — Postgres и S3 (SILO), наружу не торчат.
 
 ```
 браузер ─▶ Cloudflare Access (вход) ─▶ Tunnel ─▶ cloudflared ─▶ 127.0.0.1:4680 graphspace
@@ -13,6 +13,7 @@
 `.github/workflows/ci.yml`:
 
 - **test** — каждый push и PR: `npm test`, `npm run build`, `./setup-craft.sh`, `test:e2e` (шаг WordCraft включён).
+  Postgres 18 — service-контейнер, SILO — `docker run` (у services нет `command`).
 - **image** — push в `main` и теги `v*`: образ `ghcr.io/tsuyakashi/graphspace:<sha>` (и `:<версия>` на теге).
   Craft внутри: этап `craft` в `Dockerfile` запускает тот же `setup-craft.sh`.
   Версии — label `graphspace.craft` и `/craft/versions.json`.
@@ -42,12 +43,12 @@ Self-hosted runner к этой репе не подключать: она пуб
 - `AUTH_MODE=dev` — фиксированный пользователь для разработки.
 - `CF_ACCESS_TEAM_DOMAIN` и `CF_ACCESS_AUD` не секреты: JWT проверяется по публичному JWKS.
 
-## Бэкап
+## Данные
 
-Только для запуска из каталога проекта (локальный `compose.yaml`); на проде не работает, см. `docs/backlog.md`.
-`./deploy/backup.sh /куда` — онлайн-снимок SQLite через `node:sqlite` `backup()` и rsync блобов
-(неизменяемы, без `--delete`). Последние 30 снимков (`KEEP=`). Восстановление: остановить,
-положить снимок как `data/graphspace.db`, блобы в `data/blobs/`, запустить.
+- Postgres: узлы, связи, версии, владельцы, `shares`, `users`. Схема создаётся при старте (`CREATE … IF NOT EXISTS`).
+- S3: блобы `blobs/<2 символа>/<sha256>`, неизменяемы, бакет создаётся при старте.
+- Сервер при старте ждёт Postgres и S3 до минуты.
+- Бэкапа нет: нужен `pg_dump` и зеркало бакета за пределы VM — см. `docs/backlog.md`.
 
 ## Что учесть дальше
 
@@ -55,4 +56,4 @@ Self-hosted runner к этой репе не подключать: она пуб
 - **CSRF.** Сервер читает JSON без проверки `content-type`. Держать в Access `SameSite=Lax`,
   позже добавить проверку `Origin` для запросов кроме GET.
 - **WebDAV и десктоп** через Access — только сервисные токены или tailnet.
-- **Права на проекты** — когда появится второй человек; логин — email из JWT.
+- **Роли доступа.** Сейчас открытый раздел — всегда на правку.

@@ -1,18 +1,54 @@
-# Локальный запуск образа: docker compose up -d --build. Прод — образ из GHCR, compose в graphspace-infrastructure.
-# Craft внутри образа (craft-versions.json), том ./craft не нужен.
-# Наружу Graphspace публикуется только через Cloudflare Tunnel + Access; cloudflared, DNS и политики настраиваются отдельно.
-# Порт только на loopback ВМ: к нему ходит cloudflared, запущенный на этой же ВМ. Наружу никаких портов на 0.0.0.0.
+# Локальная разработка: Postgres и S3 (SILO, форк MinIO), сервер — `npm start` с .env.
+#   cp .env.example .env && docker compose up -d && npm start
+# Образ целиком (как на проде, но вход dev): docker compose --profile app up -d --build.
+# Прод — образ из GHCR, его compose и секреты — в graphspace-infrastructure.
+# Порты только на loopback.
 services:
+  postgres:
+    image: postgres:18
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: graphspace
+      POSTGRES_PASSWORD: graphspace
+      POSTGRES_DB: graphspace
+    volumes:
+      - pg:/var/lib/postgresql
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "graphspace", "-d", "graphspace"]
+      interval: 2s
+      retries: 30
+
+  s3:
+    image: pgsty/silo:RELEASE.2026-09-16T00-00-00Z
+    restart: unless-stopped
+    command: server /data --console-address :9001
+    environment:
+      MINIO_ROOT_USER: graphspace
+      MINIO_ROOT_PASSWORD: graphspace-dev-secret
+    volumes:
+      - s3:/data
+    ports:
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
+
   graphspace:
+    profiles: [app]
     build: .
     image: graphspace:local
-    restart: unless-stopped
-    # Владелец ./data на хосте. Обычный Docker: uid пользователя ВМ (обычно 1000). Rootless Docker: 0:0.
-    user: "${GRAPHSPACE_UID:-1000}:${GRAPHSPACE_GID:-1000}"
+    depends_on:
+      postgres: { condition: service_healthy }
+      s3: { condition: service_started }
     environment:
-      CF_ACCESS_TEAM_DOMAIN: ${CF_ACCESS_TEAM_DOMAIN:?https://<team>.cloudflareaccess.com}
-      CF_ACCESS_AUD: ${CF_ACCESS_AUD:?Application Audience (AUD) Tag приложения в Access}
-    volumes:
-      - ./data:/data
+      AUTH_MODE: dev
+      DATABASE_URL: postgres://graphspace:graphspace@postgres:5432/graphspace
+      S3_ENDPOINT: http://s3:9000
+      S3_ACCESS_KEY: graphspace
+      S3_SECRET_KEY: graphspace-dev-secret
     ports:
       - "127.0.0.1:4680:4680"
+
+volumes:
+  pg:
+  s3:

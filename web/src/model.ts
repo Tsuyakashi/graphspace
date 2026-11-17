@@ -9,13 +9,17 @@ export interface Index {
   embeddedIn: Map<string, string[]>;
 }
 
+// Псевдо-родитель для чужих разделов, которыми поделились: их настоящий родитель не виден.
+export const SHARED = '@shared';
+
 export function buildIndex(state: State): Index {
   const byId = new Map(state.nodes.map((n) => [n.id, n]));
   const kids = new Map<string | null, GNode[]>();
   for (const n of state.nodes) {
-    const list = kids.get(n.parent_id) ?? [];
+    const key = n.parent_id && byId.has(n.parent_id) ? n.parent_id : n.owner === state.me && !n.parent_id ? null : SHARED;
+    const list = kids.get(key) ?? [];
     list.push(n);
-    kids.set(n.parent_id, list);
+    kids.set(key, list);
   }
   const push = (m: Map<string, string[]>, k: string, v: string) => m.set(k, [...(m.get(k) ?? []), v]);
   const uses = new Map<string, string[]>(), usedBy = new Map<string, string[]>(), embeddedIn = new Map<string, string[]>();
@@ -25,6 +29,9 @@ export function buildIndex(state: State): Index {
   }
   return { byId, kids, uses, usedBy, embeddedIn };
 }
+
+// Узел, которым поделились напрямую: выше него ничего не видно.
+export const isShareRoot = (ix: Index, n: GNode) => (ix.kids.get(SHARED) ?? []).includes(n);
 
 export function pathOf(ix: Index, id: string, stopAt: string | null = null): GNode[] {
   const out: GNode[] = [];
@@ -48,6 +55,7 @@ export interface ScopeItem { node: GNode; via?: string } // via — контей
 
 // Область узла: все потомки плюс то, чем они пользуются по ссылке, вместе с содержимым общего узла.
 // Каждый узел входит один раз; via — узел, через ссылку которого он попал в область.
+// Без корня — всё видимое: своё и то, чем поделились.
 export function scopeOf(ix: Index, rootId: string | null): ScopeItem[] {
   const out: ScopeItem[] = [];
   const seen = new Set<string>(rootId ? [rootId] : []);
@@ -62,6 +70,7 @@ export function scopeOf(ix: Index, rootId: string | null): ScopeItem[] {
     }
   };
   walk(rootId);
+  if (!rootId) walk(SHARED);
   // Свои потомки идут первыми, поэтому общий узел, который и так лежит в области, остаётся «своим».
   for (let i = 0; i < pending.length; i++) {
     const { holder, target } = pending[i];

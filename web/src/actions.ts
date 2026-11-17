@@ -1,7 +1,7 @@
 // Действия над узлами: создание, загрузка, переименование, удаление, ссылки, меню.
 import { api, type GNode } from './api';
 import { useApp, type MenuItem } from './ctx';
-import { pathOf, splitName, typeForExt } from './model';
+import { isShareRoot, pathOf, splitName, typeForExt } from './model';
 
 const EMPTY_BOARD = JSON.stringify({ type: 'excalidraw', version: 2, source: 'graphspace', elements: [], appState: { viewBackgroundColor: '#ffffff' }, files: {} });
 export const RESOURCE_KINDS = ['git', 's3', 'registry', 'url'];
@@ -95,6 +95,18 @@ export function useActions() {
   });
   const unlink = (spaceId: string, target: GNode) => app.run(async () => { await api.unlink(spaceId, target.id); await app.reload(); });
 
+  // Поделиться поддеревом: выбрать можно любого, кто уже входил, или вписать email.
+  const shareNode = (node: GNode) => app.run(async () => {
+    const v = await app.ask(`Поделиться «${node.title}»`, [
+      { name: 'email', label: 'Email', placeholder: 'кто уже входил — в подсказках', options: app.state.users.filter((u) => u !== app.state.me) },
+    ], 'Открыть доступ');
+    if (!v) return;
+    await api.share(node.id, v.email);
+    await app.reload();
+    app.toast(`«${node.title}» доступен ${v.email.trim().toLowerCase()}: всё внутри, на правку`);
+  });
+  const unshare = (node: GNode, email: string) => app.run(async () => { await api.unshare(node.id, email); await app.reload(); });
+
   const createItems = (parent: GNode): MenuItem[] => [
     { label: parent.type === 'space' ? 'Создать' : 'Создать внутри', sep: true },
     { label: 'Раздел', run: () => createIn(parent, 'space') },
@@ -128,10 +140,19 @@ export function useActions() {
     items.push(...createItems(node));
     items.push({ label: '', sep: true });
     items.push({ label: 'Переименовать', run: () => rename(node) });
-    if (node.parent_id) items.push({ label: 'Вынести на верхний уровень', run: () => app.run(async () => { await api.patch(node.id, { parent_id: null }); await app.reload(); }) });
-    items.push({ label: 'В корзину', danger: true, run: () => remove(node) });
+    const mine = node.owner === app.state.me;
+    const shareRoot = isShareRoot(app.ix, node);
+    if (mine) {
+      items.push({ label: 'Поделиться…', run: () => shareNode(node) });
+      for (const s of app.state.sharing.filter((x) => x.node_id === node.id)) {
+        items.push({ label: `Закрыть доступ: ${s.email}`, run: () => unshare(node, s.email) });
+      }
+    } else if (shareRoot) items.push({ label: `Владелец: ${node.owner}`, sep: true });
+    // Корень общего раздела удаляет и переносит только владелец, наверх выносит тоже он.
+    if (node.parent_id && mine) items.push({ label: 'Вынести на верхний уровень', run: () => app.run(async () => { await api.patch(node.id, { parent_id: null }); await app.reload(); }) });
+    if (!shareRoot) items.push({ label: 'В корзину', danger: true, run: () => remove(node) });
     return items;
   };
 
-  return { createIn, upload, pickFiles, rename, remove, move, addExisting, unlink, createItems, menuFor };
+  return { createIn, upload, pickFiles, rename, remove, move, addExisting, unlink, shareNode, createItems, menuFor };
 }

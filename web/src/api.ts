@@ -9,11 +9,14 @@ export interface GNode {
   props: Record<string, any>;
   ext: string | null;
   head: number | null;
+  owner: string; // владелец пространства, в котором живёт узел
   created_at: string;
   updated_at: string;
 }
 export interface Link { from_id: string; to_id: string; kind: 'uses' | 'embeds' | 'mentions' }
-export interface State { nodes: GNode[]; links: Link[]; checkouts: string[] }
+export interface Share { node_id: string; email: string }
+// sharing — кому открыты мои узлы; users — все, кто хоть раз входил.
+export interface State { me: string; nodes: GNode[]; links: Link[]; checkouts: string[]; users: string[]; sharing: Share[] }
 export interface Version { node_id: string; n: number; blob: string; size: number; author: string; created_at: string; name: string | null }
 export interface Config {
   author: string;
@@ -47,6 +50,8 @@ export const api = {
   versions: (id: string) => j<Version[]>('GET', `/api/nodes/${id}/versions`),
   nameVersion: (id: string, n: number, name: string) => j<Version>('PATCH', `/api/nodes/${id}/versions/${n}`, { name }),
   restoreVersion: (id: string, n: number) => j<SaveResult>('POST', `/api/nodes/${id}/versions/${n}/restore`),
+  share: (id: string, email: string) => j('POST', `/api/nodes/${id}/shares`, { email }),
+  unshare: (id: string, email: string) => j('DELETE', `/api/nodes/${id}/shares/${encodeURIComponent(email)}`),
   openNative: (id: string) => j<{ file: string; already?: boolean }>('POST', `/api/nodes/${id}/open-native`),
 
   contentUrl: (id: string, v?: number | null, download = false) =>

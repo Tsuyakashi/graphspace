@@ -163,6 +163,23 @@ try {
     await page.waitForFunction(() => [...document.querySelectorAll('.tree .row .title')].some((e) => e.textContent === 'Новый проект'));
   });
 
+  await step('чужой раздел, которым поделились: секция «Доступно мне» и владелец', async () => {
+    const other = { 'content-type': 'application/json', 'x-graphspace-dev-user': 'alice@example.com' };
+    const p = await (await fetch(`${s.base}/api/nodes`, { method: 'POST', headers: other, body: JSON.stringify({ type: 'space', title: 'Проект Алисы', props: { label: 'проект' } }) })).json();
+    await fetch(`${s.base}/api/nodes`, { method: 'POST', headers: other, body: JSON.stringify({ type: 'doc', title: 'Её заметки', parent_id: p.id, ext: 'md' }) });
+    await page.goto(s.base);
+    await page.waitForSelector('.tree .row');
+    assert.equal(await page.locator('.tree .row .title', { hasText: 'Проект Алисы' }).count(), 0); // пока не поделились — не видно
+    await fetch(`${s.base}/api/nodes/${p.id}/shares`, { method: 'POST', headers: other, body: JSON.stringify({ email: 'test' }) });
+    await page.locator('.tree-sep', { hasText: 'Доступно мне' }).waitFor();
+    await page.locator('.tree .row .title', { hasText: 'Проект Алисы' }).waitFor();
+    assert.equal(await page.locator('.tree .row .label.where', { hasText: 'alice@example.com' }).count(), 1);
+    await page.locator('.tree .row', { hasText: 'Проект Алисы' }).click({ button: 'right' });
+    assert.equal(await page.locator('.menu button', { hasText: 'В корзину' }).count(), 0); // корень общего удаляет только владелец
+    await page.keyboard.press('Escape');
+    await shot('9-shared');
+  });
+
   const real = errors.filter((e) => !/subsetting/.test(e));
   assert.deepEqual(real, [], 'ошибки на странице');
   console.log(`\nшагов пройдено: ${results.length}, ошибок на странице: 0`);

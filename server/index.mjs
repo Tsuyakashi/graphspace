@@ -4,12 +4,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawn, execFile } from 'node:child_process';
 import {
-  ROOT, DATA, HttpError, allNodes, allLinks, createNode, updateNode, trashNode, restoreNode, mustNode,
-  versions, getVersion, addVersion, nameVersion, headBytes, readBlob, blobFile, addLink, removeLink,
+  ROOT, DATA, HttpError, init, allNodes, allLinks, createNode, updateNode, trashNode, restoreNode, mustNode,
+  versions, getVersion, addVersion, nameVersion, headBytes, readBlob, addLink, removeLink,
+  touchUser, allUsers, share, unshare, mySharing,
 } from './db.mjs';
+import { checkS3Config } from './s3.mjs';
 import { seedIfEmpty } from './seed.mjs';
 import { exportDoc, exportSpace } from './export.mjs';
-import { checkAuthConfig, userOf } from './auth.mjs';
+import { AUTH_MODE, DEV_USER, checkAuthConfig, userOf } from './auth.mjs';
 
 const PORT = Number(process.env.PORT || 4680);
 const HOST = process.env.HOST || '127.0.0.1';
@@ -35,19 +37,19 @@ const config = {
 };
 
 // ---------- события для клиентов ----------
+// Событие без id: клиент по нему просто перечитывает своё состояние, а чужие id никуда не уходят.
 const listeners = new Set();
-function broadcast(event) {
-  const line = `data: ${JSON.stringify(event)}\n\n`;
-  for (const res of listeners) res.write(line);
+function broadcast() {
+  for (const res of listeners) res.write('data: {"type":"changed"}\n\n');
 }
 
 // ---------- нативное открытие: checkout → приложение → слежение за файлом → новая версия ----------
 const checkouts = new Map();
 const safeName = (s) => s.replace(/[\\/:*?"<>|\x00-\x1f]/g, '_');
-function openNative(node, user) {
+async function openNative(node, user) {
   const app = CRAFT_BY_EXT[node.ext];
   if (!app || !config.native[app]) throw new HttpError(409, `нативное приложение для .${node.ext} не установлено`);
-  const bytes = headBytes(node.id);
+  const bytes = await headBytes(node);
   if (!bytes) throw new HttpError(409, 'у узла ещё нет содержимого');
   const dir = path.join(DATA, 'checkout', node.id);
   fs.mkdirSync(dir, { recursive: true });
@@ -57,35 +59,35 @@ function openNative(node, user) {
   fs.writeFileSync(file, bytes);
 
   let timer = null;
-  const pull = () => {
+  const pull = async () => {
     try {
       const fresh = fs.readFileSync(file);
       if (!fresh.length) return;
-      const r = addVersion(node.id, fresh, { author: `${user} · ${app}` });
-      if (!r.unchanged) broadcast({ type: 'changed', id: node.id, reason: 'native-save' });
+      const r = await addVersion(user, node.id, fresh, { author: `${user} · ${app}` });
+      if (!r.unchanged) broadcast();
     } catch { /* файл в середине записи или уже удалён — следующий сигнал повторит */ }
   };
   // Следим за каталогом, а не за файлом: редакторы часто сохраняют через временный файл и переименование.
   const watcher = fs.watch(dir, () => { clearTimeout(timer); timer = setTimeout(pull, 400); });
   const child = spawn(app, [file], { detached: true, stdio: 'ignore' });
   child.on('error', () => { watcher.close(); checkouts.delete(node.id); });
-  child.on('exit', () => setTimeout(() => { pull(); watcher.close(); checkouts.delete(node.id); broadcast({ type: 'changed', id: node.id, reason: 'native-closed' }); }, 600));
+  child.on('exit', () => setTimeout(() => { pull(); watcher.close(); checkouts.delete(node.id); broadcast(); }, 600));
   child.unref();
   checkouts.set(node.id, { file, app });
   return { file };
 }
 
 // ---------- превью docx первой страницей ----------
-function preview(node, res) {
+async function preview(node, res) {
   if (!config.preview || !['docx', 'odt', 'rtf'].includes(node.ext) || !node.head) throw new HttpError(404, 'превью нет');
-  const blob = getVersion(node.id, node.head).blob;
+  const blob = (await getVersion(node.id, node.head)).blob;
   const dir = path.join(DATA, 'cache');
   const out = path.join(dir, `${blob}.png`);
   const send = () => sendFile(res, out, 'image/png', 'private, max-age=31536000, immutable');
   if (fs.existsSync(out)) return send();
   fs.mkdirSync(dir, { recursive: true });
   const src = path.join(dir, `${blob}.${node.ext}`);
-  fs.copyFileSync(blobFile(blob), src);
+  fs.writeFileSync(src, await readBlob(blob));
   execFile('wordcraft-cli', ['render', src, out, '--page', '1'], { timeout: 30000 }, (err) => {
     fs.rm(src, { force: true }, () => {});
     if (err || !fs.existsSync(out)) return fail(res, new HttpError(500, 'не удалось построить превью'));
@@ -148,10 +150,14 @@ const readJson = async (req) => {
 async function api(req, res, url, user) {
   const seg = url.pathname.split('/').filter(Boolean).slice(1); // без "api"
   const m = req.method;
-  const changed = (id, reason) => broadcast({ type: 'changed', id, reason });
+  const changed = () => broadcast();
 
   if (seg[0] === 'config' && m === 'GET') return json(res, { ...config, author: user });
-  if (seg[0] === 'state' && m === 'GET') return json(res, { nodes: allNodes(), links: allLinks(), checkouts: [...checkouts.keys()] });
+  if (seg[0] === 'state' && m === 'GET') {
+    const [nodes, links, users, sharing] = await Promise.all([allNodes(user), allLinks(user), allUsers(), mySharing(user)]);
+    const ids = new Set(nodes.map((n) => n.id));
+    return json(res, { me: user, nodes, links, users, sharing, checkouts: [...checkouts.keys()].filter((id) => ids.has(id)) });
+  }
 
   if (seg[0] === 'events' && m === 'GET') {
     res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store', connection: 'keep-alive' });
@@ -165,78 +171,84 @@ async function api(req, res, url, user) {
   if (seg[0] === 'links') {
     const { from, to, kind = 'uses' } = await readJson(req);
     if (kind !== 'uses') throw new HttpError(400, 'вручную создаётся только связь uses');
-    if (m === 'POST') { addLink(from, to, kind); changed(from, 'link'); return json(res, { ok: true }); }
-    if (m === 'DELETE') { removeLink(from, to, kind); changed(from, 'link'); return json(res, { ok: true }); }
+    if (m === 'POST') { await addLink(user, from, to, kind); changed(); return json(res, { ok: true }); }
+    if (m === 'DELETE') { await removeLink(user, from, to, kind); changed(); return json(res, { ok: true }); }
   }
 
   if (seg[0] === 'nodes' && seg.length === 1 && m === 'POST') {
-    const node = createNode(await readJson(req));
-    changed(node.id, 'created');
+    const node = await createNode(user, await readJson(req));
+    changed();
     return json(res, node, 201);
   }
 
   if (seg[0] === 'nodes' && seg[1]) {
     const id = seg[1];
     const sub = seg[2];
-    if (!sub && m === 'PATCH') { const n = updateNode(id, await readJson(req)); changed(id, 'updated'); return json(res, n); }
-    if (!sub && m === 'DELETE') { trashNode(id); changed(id, 'trashed'); return json(res, { ok: true }); }
-    if (sub === 'restore' && m === 'POST') { restoreNode(id); changed(id, 'restored'); return json(res, { ok: true }); }
+    if (sub === 'restore' && m === 'POST') { await restoreNode(user, id); changed(); return json(res, { ok: true }); }
+    // Дальше — только видимые узлы. Чужой и несуществующий неотличимы: 404.
+    const node = await mustNode(id, user);
+    if (!sub && m === 'PATCH') { const n = await updateNode(user, id, await readJson(req)); changed(); return json(res, n); }
+    if (!sub && m === 'DELETE') { await trashNode(user, id); changed(); return json(res, { ok: true }); }
+
+    if (sub === 'shares' && m === 'POST') { await share(user, id, (await readJson(req)).email); changed(); return json(res, { ok: true }); }
+    if (sub === 'shares' && seg[3] && m === 'DELETE') { await unshare(user, id, decodeURIComponent(seg[3])); changed(); return json(res, { ok: true }); }
 
     if (sub === 'content' && m === 'GET') {
-      const node = mustNode(id);
       const n = url.searchParams.get('v') ? Number(url.searchParams.get('v')) : node.head;
-      const v = n && getVersion(id, n);
+      const v = n && await getVersion(id, n);
       if (!v) throw new HttpError(404, 'содержимого нет');
-      const headers = { 'content-type': mime(node.ext), 'content-length': v.size, 'cache-control': 'no-store', 'x-version': String(v.n), 'x-content-type-options': 'nosniff' };
+      const bytes = await readBlob(v.blob);
+      const headers = { 'content-type': mime(node.ext), 'content-length': bytes.length, 'cache-control': 'no-store', 'x-version': String(v.n), 'x-content-type-options': 'nosniff' };
       if (url.searchParams.has('download')) {
         const name = node.title.toLowerCase().endsWith('.' + node.ext) || !node.ext ? node.title : `${node.title}.${node.ext}`;
         headers['content-disposition'] = `attachment; filename*=UTF-8''${encodeURIComponent(name)}`;
       }
       res.writeHead(200, headers);
-      return res.end(readBlob(v.blob));
+      return res.end(bytes);
     }
     if (sub === 'content' && m === 'PUT') {
       const bytes = await readBody(req);
       const base = req.headers['x-base-version'] ?? null;
-      const r = addVersion(id, bytes, { author: user, base: base === '' ? null : base });
-      if (!r.unchanged) changed(id, r.conflict ? 'conflict' : 'saved');
+      const r = await addVersion(user, id, bytes, { base: base === '' ? null : base });
+      if (!r.unchanged) changed();
       return json(res, r, r.conflict ? 409 : 200);
     }
-    if (sub === 'versions' && !seg[3] && m === 'GET') return json(res, versions(id));
+    if (sub === 'versions' && !seg[3] && m === 'GET') return json(res, await versions(id));
     if (sub === 'versions' && seg[3] && m === 'PATCH') {
-      const v = nameVersion(id, Number(seg[3]), (await readJson(req)).name);
-      changed(id, 'version-named');
+      const v = await nameVersion(id, Number(seg[3]), (await readJson(req)).name);
+      changed();
       return json(res, v);
     }
     if (sub === 'versions' && seg[3] && seg[4] === 'restore' && m === 'POST') {
-      const old = getVersion(id, Number(seg[3]));
+      const old = await getVersion(id, Number(seg[3]));
       if (!old) throw new HttpError(404, 'версия не найдена');
-      const r = addVersion(id, readBlob(old.blob), { author: user, name: `возврат к v${old.n}` });
-      changed(id, 'saved');
+      const r = await addVersion(user, id, await readBlob(old.blob), { name: `возврат к v${old.n}` });
+      changed();
       return json(res, r);
     }
     if (sub === 'export' && m === 'GET') {
-      const node = mustNode(id);
-      const { name, bytes } = node.type === 'space' ? exportSpace(id) : exportDoc(id, `http://${req.headers.host}`);
+      const { name, bytes } = node.type === 'space' ? await exportSpace(user, id) : await exportDoc(user, id, `http://${req.headers.host}`);
       res.writeHead(200, { 'content-type': node.type === 'space' ? 'application/zip' : mime('md'), 'content-length': bytes.length, 'cache-control': 'no-store',
         'content-disposition': `attachment; filename*=UTF-8''${encodeURIComponent(name)}` });
       return res.end(bytes);
     }
-    if (sub === 'preview' && m === 'GET') return preview(mustNode(id), res);
-    if (sub === 'open-native' && m === 'POST') { const r = openNative(mustNode(id), user); changed(id, 'native-open'); return json(res, r); }
+    if (sub === 'preview' && m === 'GET') return preview(node, res);
+    if (sub === 'open-native' && m === 'POST') { const r = await openNative(node, user); changed(); return json(res, r); }
   }
   throw new HttpError(404, 'нет такого метода');
 }
 
-const authInfo = (() => { try { return checkAuthConfig(); } catch (e) { console.error(`Graphspace не запущен: ${e.message}`); process.exit(1); } })();
-if (process.env.GRAPHSPACE_SEED !== '0') seedIfEmpty();
+let authInfo, s3Info;
+try { authInfo = checkAuthConfig(); s3Info = checkS3Config(); await init(); } catch (e) { console.error(`Graphspace не запущен: ${e.message}`); process.exit(1); }
+// Демо — только в режиме разработки: в проде у каждого своё пустое пространство.
+if (AUTH_MODE === 'dev' && process.env.GRAPHSPACE_SEED !== '0') await seedIfEmpty(DEV_USER.toLowerCase());
 
 http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x');
   // Проверка живости для Docker: без входа и без данных.
   if (url.pathname === '/healthz') { res.writeHead(200, { 'content-type': 'text/plain' }); return res.end('ok'); }
   let user;
-  try { user = await userOf(req); } catch (e) { return fail(res, e); }
+  try { user = await userOf(req); await touchUser(user); } catch (e) { return fail(res, e); }
   if (url.pathname.startsWith('/api/')) return api(req, res, url, user).catch((e) => fail(res, e));
   if (req.method !== 'GET' && req.method !== 'HEAD') return fail(res, new HttpError(405, 'метод не поддерживается'));
   if (url.pathname.startsWith('/craft/')) return serveStatic(res, CRAFT_DIR, url.pathname.slice('/craft'.length));
@@ -244,7 +256,7 @@ http.createServer(async (req, res) => {
   serveStatic(res, DIST, url.pathname, { spa: true });
 }).listen(PORT, HOST, () => {
   console.log(`Graphspace: http://${HOST === '0.0.0.0' ? 'localhost' : HOST}:${PORT}`);
-  console.log(`  данные: ${DATA}`);
+  console.log(`  кэш: ${DATA}, блобы: ${s3Info}`);
   console.log(`  вход: ${authInfo}`);
   console.log(`  Craft в вебе: ${Object.entries(config.web).filter(([, v]) => v).map(([k]) => k).join(', ') || 'нет'} (${CRAFT_DIR})`);
   console.log(`  Craft нативно: ${Object.entries(config.native).filter(([, v]) => v).map(([k]) => k).join(', ') || 'нет'}`);
