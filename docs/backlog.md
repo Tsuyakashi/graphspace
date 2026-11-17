@@ -4,7 +4,8 @@
 
 ## 1. Чтобы пользоваться каждый день
 
-1. **Деплой** — сделан: `Dockerfile`, `compose.yaml` (один сервис, порт на loopback), `deploy/backup.sh`. Шаги — `docs/deploy.md`.
+1. **Деплой** — сделан: образ в GHCR, деплой и откат — в `graphspace-infrastructure`, прод на `graphspace.workd.online`. Шаги — `docs/deploy.md`.
+   - **Бэкапа прода нет.** `deploy/backup.sh` рассчитан на каталог проекта на ВМ, а там только образ: данные в `/home/graphspace/data`, compose в checkout runner'а. Решить, нужен ли и куда.
 2. **Вход** — сделан: только Cloudflare Tunnel + Access, пользователь из JWT `Cf-Access-Jwt-Assertion` с проверкой по JWKS, `aud` и `iss`. Без валидного JWT — 401. `AUTH_MODE=dev` — для разработки. Дальше:
    - проверка `Origin` на запросах кроме GET;
    - лимит Cloudflare 100 МБ на загрузку — показать понятную ошибку в интерфейсе.
