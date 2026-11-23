@@ -114,7 +114,10 @@ try {
     await page.locator('.doc-edit textarea').click();
     await page.keyboard.press('Control+End');
     await page.keyboard.type('\n\nправка из теста');
-    await page.keyboard.press('Control+s');
+    // Русская раскладка: key — «ы», code — KeyS. Браузерное «Сохранить страницу» не должно открыться.
+    const prevented = await page.locator('.doc-edit textarea').evaluate((t) =>
+      !t.dispatchEvent(new KeyboardEvent('keydown', { key: 'ы', code: 'KeyS', ctrlKey: true, bubbles: true, cancelable: true })));
+    assert.ok(prevented, 'Ctrl+S в ru-раскладке перехвачен');
     await page.waitForFunction(() => [...document.querySelectorAll('.slot button')].some((b) => b.textContent === 'Сохранено'));
     assert.equal(await versions(doc), 2);
     await page.goto(`${s.base}/?sel=${id('Обзор проекта')}`);
@@ -223,6 +226,22 @@ try {
     for (const n of [p1, p2, note]) await fetch(`${s.base}/api/nodes/${n.id}`, { method: 'DELETE' });
   });
 
+  await step('правый клик по пустому месту дерева — меню создания', async () => {
+    await page.goto(s.base);
+    await page.waitForSelector('.tree .row');
+    await page.locator('.tree').evaluate((t) => { t.scrollTop = t.scrollHeight; });
+    const box = await page.locator('.tree').boundingBox();
+    await page.mouse.click(box.x + 40, box.y + box.height - 8, { button: 'right' });
+    await page.locator('.menu button', { hasText: 'Новый проект' }).waitFor();
+    await page.keyboard.press('Escape');
+    await page.goto(`${s.base}/?root=${id('dev')}`);
+    await page.waitForSelector('.tree .row');
+    const b2 = await page.locator('.tree').boundingBox();
+    await page.mouse.click(b2.x + 40, b2.y + b2.height - 8, { button: 'right' });
+    await page.locator('.menu button', { hasText: 'PowerPoint' }).waitFor();
+    await page.keyboard.press('Escape');
+  });
+
   await step('создание проекта с меткой и корзина', async () => {
     await page.goto(s.base);
     await page.locator('.side-tools button', { hasText: 'Проект' }).click();
@@ -263,6 +282,58 @@ try {
     assert.equal(await page.locator('.graph .gn > text', { hasText: 'Проект Алисы' }).count(), 1); // подпись узла, не путь в title
     await shot('10-graph-shared');
   });
+
+  // Хост Craft на заглушке (tests/craft-mock): тот же протокол, что у веб-сборок, без самих сборок.
+  const m = await startServer({ env: { GRAPHSPACE_CRAFT_DIR: new URL('./craft-mock', import.meta.url).pathname } });
+  try {
+    const mk = async (b) => (await fetch(`${m.base}/api/nodes`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(b) })).json();
+    const vers = async (nid) => (await (await fetch(`${m.base}/api/nodes/${nid}/versions`)).json()).length;
+    const P = await mk({ type: 'space', title: 'P' });
+    const X = await mk({ type: 'office', title: 'Таблица', parent_id: P.id, ext: 'xlsx' });
+    const S = await mk({ type: 'office', title: 'Слайды', parent_id: P.id, ext: 'pptx' });
+    await mk({ type: 'doc', title: 'Док', parent_id: P.id, ext: 'md' });
+    const p2 = await browser.newPage();
+    await p2.route('**/api/events', (r) => r.abort()); // без событий: состояние у клиента устаревает
+    const go = async (title, app) => {
+      await p2.locator('.tree .row .title', { hasText: new RegExp(`^${title}$`) }).click();
+      await p2.waitForFunction((t) => document.querySelector('.node-title h1')?.textContent === t, title);
+      if (!app) return null;
+      await p2.waitForFunction((a) => new RegExp(a + ' mock').test(document.querySelector('.slot .state')?.textContent ?? ''), app);
+      await p2.waitForTimeout(300);
+      return p2.frames().find((f) => f.url().includes(`/craft/${app}/`));
+    };
+    await p2.goto(`${m.base}/?root=${P.id}`);
+
+    await step('Craft: новый файл, правка, уход и возврат — правка на месте', async () => {
+      let f = await go('Таблица', 'gridcraft');
+      await f.locator('#t').fill('hello');
+      await p2.waitForFunction(() => /несохран/.test(document.querySelector('.slot .state')?.textContent ?? ''));
+      await go('Док');
+      assert.equal(await vers(X.id), 1);
+      f = await go('Таблица', 'gridcraft');
+      await p2.waitForFunction(() => document.querySelector('iframe')?.contentDocument?.querySelector('#t')?.value === 'hello', null, { timeout: 5000 });
+    });
+
+    await step('Craft: новый pptx открывается шаблоном, Ctrl+S пишет в этот узел, а не .deckcraft рядом', async () => {
+      const count = async () => (await (await fetch(`${m.base}/api/state`)).json()).nodes.length;
+      const before = await count();
+      const f = await go('Слайды', 'deckcraft');
+      assert.match(await f.locator('#log').textContent(), /opened Слайды\.pptx/);
+      await f.locator('#t').fill('slide');
+      await f.locator('#t').press('Control+s');
+      await p2.waitForFunction(async (nid) => (await (await fetch(`/api/nodes/${nid}/versions`)).json()).length === 1, S.id);
+      assert.equal(await count(), before);
+    });
+
+    await step('Craft: .deckcraft рядом открывается в DeckCraft', async () => {
+      const junk = await mk({ type: 'file', title: 'Presentation1.deckcraft', parent_id: P.id, ext: 'deckcraft' });
+      await fetch(`${m.base}/api/nodes/${junk.id}/content`, { method: 'PUT', headers: { 'x-base-version': '' }, body: 'MOCK:старое' });
+      await p2.reload();
+      await go('Presentation1.deckcraft', 'deckcraft');
+      await p2.waitForFunction(() => document.querySelector('iframe')?.contentDocument?.querySelector('#t')?.value === 'старое', null, { timeout: 5000 });
+    });
+    await p2.close();
+  } finally { await m.stop(); }
 
   const real = errors.filter((e) => !/subsetting/.test(e));
   assert.deepEqual(real, [], 'ошибки на странице');

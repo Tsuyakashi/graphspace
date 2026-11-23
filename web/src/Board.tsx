@@ -81,7 +81,7 @@ export default function BoardEditor({ node, slot }: { node: GNode; slot: HTMLEle
   }, [node.id]);
 
   useEffect(() => {
-    const key = (e: KeyboardEvent) => { if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') { e.preventDefault(); save(); } };
+    const key = (e: KeyboardEvent) => { if ((e.ctrlKey || e.metaKey) && e.code === 'KeyS') { e.preventDefault(); save(); } };
     addEventListener('keydown', key, true);
     return () => { removeEventListener('keydown', key, true); if (dirtyRef.current) save(); };
   }, [save]);

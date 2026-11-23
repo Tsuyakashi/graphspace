@@ -59,9 +59,9 @@ export function useActions() {
     if (last) { app.go({ sel: last.id }); app.toast(files.length > 1 ? `Загружено файлов: ${files.length}` : `Загружен: ${files[0].name}`); }
   });
 
-  const pickFiles = (parent: GNode) => {
+  const pickFiles = (parentId: string | null) => {
     const input = Object.assign(document.createElement('input'), { type: 'file', multiple: true });
-    input.onchange = () => input.files?.length && upload(parent.id, [...input.files]);
+    input.onchange = () => input.files?.length && upload(parentId, [...input.files]);
     input.click();
   };
 
@@ -129,8 +129,15 @@ export function useActions() {
     { label: 'PowerPoint', run: () => createIn(parent, 'pptx') },
     { label: 'Ресурс: git, S3, registry…', run: () => createIn(parent, 'resource') },
     { label: '', sep: true },
-    { label: 'Загрузить файлы…', run: () => pickFiles(parent) },
+    { label: 'Загрузить файлы…', run: () => pickFiles(parent.id) },
     { label: 'Добавить существующий ссылкой…', run: () => addExisting(parent) },
+  ];
+
+  // Правый клик по пустому месту дерева: создать в текущем корне, без корня — на верхнем уровне.
+  const areaItems = (root: GNode | null): MenuItem[] => root ? createItems(root) : [
+    { label: 'Верхний уровень', sep: true },
+    { label: 'Новый проект', run: () => createIn(null, 'space') },
+    { label: 'Загрузить файлы…', run: () => pickFiles(null) },
   ];
 
   const menuFor = (node: GNode, via?: string): MenuItem[] => {
@@ -167,5 +174,5 @@ export function useActions() {
     return items;
   };
 
-  return { createIn, upload, pickFiles, rename, remove, move, moveTo, addExisting, unlink, shareNode, createItems, menuFor };
+  return { createIn, upload, pickFiles, rename, remove, move, moveTo, addExisting, unlink, shareNode, createItems, areaItems, menuFor };
 }

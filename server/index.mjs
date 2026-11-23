@@ -23,7 +23,7 @@ const DIST = path.join(ROOT, 'web', 'dist');
 const CRAFT_BY_EXT = {
   docx: 'wordcraft', odt: 'wordcraft', rtf: 'wordcraft',
   xlsx: 'gridcraft', csv: 'gridcraft',
-  pptx: 'deckcraft',
+  pptx: 'deckcraft', deckcraft: 'deckcraft', // .deckcraft — свой формат DeckCraft (Save безымянной презентации)
   pdf: 'pdfcraft',
   fig: 'figcraft',
 };

@@ -102,7 +102,7 @@ export function App() {
   useEffect(() => {
     if (!ctx) return;
     const key = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+      if ((e.ctrlKey || e.metaKey) && e.code === 'KeyK') {
         e.preventDefault();
         ctx.pick('Перейти к узлу…').then((n) => n && openNode(ctx, n.id));
       }
@@ -190,7 +190,8 @@ function Sidebar() {
       </div>
 
       {/* Пустое место дерева — тоже цель переноса: в текущий корень, без корня — на верхний уровень. */}
-      <div className="tree" role="tree" {...dropProps(nav.root, act, true)}>
+      <div className="tree" role="tree" {...dropProps(nav.root, act, true)}
+        onContextMenu={(e) => { if (!(e.target instanceof Element && e.target.closest('.row'))) app.menu(e, act.areaItems(root)); }}>
         {root && (
           <div className={`row root-row ${nav.sel === root.id ? 'sel' : ''}`} onClick={() => app.go({ sel: root.id })}
             onContextMenu={(e) => app.menu(e, act.menuFor(root))} {...dropProps(root.id, act)}>

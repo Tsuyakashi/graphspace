@@ -95,8 +95,8 @@ export function NodeView({ node }: { node: GNode }) {
           {node.type === 'space' && <SpaceView node={node} />}
           {node.type === 'doc' && <DocView node={node} slot={slot} />}
           {node.type === 'board' && <Suspense fallback={<div className="pane-note">Редактор схем загружается…</div>}><BoardEditor node={node} slot={slot} /></Suspense>}
-          {(node.type === 'office' || node.type === 'pdf' || node.type === 'design') && <CraftView node={node} slot={slot} />}
-          {node.type === 'file' && <FileView node={node} />}
+          {(node.type === 'office' || node.type === 'pdf' || node.type === 'design' || (node.type === 'file' && craft)) && <CraftView node={node} slot={slot} />}
+          {node.type === 'file' && !craft && <FileView node={node} />}
           {node.type === 'resource' && <ResourceView node={node} />}
         </div>
         {showVersions && <VersionsPanel node={node} close={() => setShowVersions(false)} />}
@@ -155,7 +155,7 @@ function DocView({ node, slot }: { node: GNode; slot: HTMLElement | null }) {
   }, [node.id]);
 
   useEffect(() => {
-    const key = (e: KeyboardEvent) => { if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') { e.preventDefault(); save(); } };
+    const key = (e: KeyboardEvent) => { if ((e.ctrlKey || e.metaKey) && e.code === 'KeyS') { e.preventDefault(); save(); } };
     addEventListener('keydown', key);
     return () => { removeEventListener('keydown', key); save(); }; // страховка: размонтирование тоже сохраняет
   }, [save]);

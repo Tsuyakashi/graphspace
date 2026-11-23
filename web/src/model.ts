@@ -123,7 +123,7 @@ export const TYPE_LABEL: Record<NodeType, string> = {
 
 export function typeForExt(ext: string): { type: NodeType; ext: string } {
   const e = ext.toLowerCase();
-  if (['docx', 'odt', 'rtf', 'xlsx', 'csv', 'pptx'].includes(e)) return { type: 'office', ext: e };
+  if (['docx', 'odt', 'rtf', 'xlsx', 'csv', 'pptx', 'deckcraft'].includes(e)) return { type: 'office', ext: e };
   if (e === 'pdf') return { type: 'pdf', ext: e };
   if (e === 'fig') return { type: 'design', ext: e };
   if (e === 'md') return { type: 'doc', ext: e };
