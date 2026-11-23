@@ -80,4 +80,13 @@ export const api = {
     if (!res.ok && res.status !== 409) throw new Error(data.error || `ошибка ${res.status}`);
     return data as SaveResult;
   },
+  // Сохранение при закрытии вкладки: keepalive переживает страницу, но тело — до 64 КБ. Ответ не ждём.
+  saveOnExit(id: string, body: string, base: number | null) {
+    try {
+      fetch(`/api/nodes/${id}/content`, {
+        method: 'PUT', keepalive: true, body,
+        headers: { 'content-type': 'application/octet-stream', 'x-base-version': base == null ? '' : String(base) },
+      }).catch(() => {});
+    } catch { /* больше 64 КБ — keepalive не принимает, остаётся вопрос браузера */ }
+  },
 };

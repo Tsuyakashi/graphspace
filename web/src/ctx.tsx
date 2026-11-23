@@ -3,7 +3,9 @@ import { createContext, useContext, useEffect, useMemo, useRef, useState, type R
 import type { Config, GNode, State } from './api';
 import { type Index, pathOf, scopeOf } from './model';
 
-export interface Nav { root: string | null; sel: string | null; type: string; show: 'tree' | 'flat'; graph: boolean }
+export interface Nav { root: string | null; sel: string | null; type: string; graph: boolean }
+// Редактор с правками: перед уходом с узла сохраняет их. false — остаться.
+export type LeaveGuard = () => Promise<boolean>;
 export interface Field { name: string; label: string; value?: string; options?: string[]; placeholder?: string; optional?: boolean }
 export interface MenuItem { label: string; run?: () => void; danger?: boolean; sep?: boolean; hint?: string }
 
@@ -19,6 +21,8 @@ export interface Ctx {
   pick: (title: string, filter?: (n: GNode) => boolean) => Promise<GNode | null>;
   menu: (e: { clientX: number; clientY: number; preventDefault(): void }, items: MenuItem[]) => void;
   run: (fn: () => Promise<unknown>) => Promise<void>;
+  // Регистрирует защиту ухода, возвращает снятие. Действует, пока узел открыт.
+  guard: (fn: LeaveGuard) => () => void;
 }
 export const AppCtx = createContext<Ctx>(null as unknown as Ctx);
 export const useApp = () => useContext(AppCtx);

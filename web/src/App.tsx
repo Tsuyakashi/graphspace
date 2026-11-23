@@ -1,26 +1,28 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, type Config, type GNode, type State } from './api';
-import { AppCtx, AskDialog, Icon, Menu, NodeIcon, Palette, Toasts, openNode, useApp, type Ctx, type Field, type MenuItem, type Nav, type ToastItem } from './ctx';
+import { AppCtx, AskDialog, Icon, Menu, NodeIcon, Palette, Toasts, openNode, useApp, type Ctx, type Field, type LeaveGuard, type MenuItem, type Nav, type ToastItem } from './ctx';
 import { SHARED, buildIndex, isShareRoot, matches, pathOf, scopeOf, treeRows, type Row } from './model';
 import { useActions } from './actions';
 import { NodeView, Projects } from './NodeView';
 import { GraphView } from './Graph';
 
-// Экран целиком описывается адресом: корень, выбранный узел, фильтр по типу, способ показа.
+// Экран целиком описывается адресом: корень, выбранный узел, фильтр по типу, граф или содержимое.
 function readNav(): Nav {
   const q = new URLSearchParams(location.search);
-  return { root: q.get('root'), sel: q.get('sel'), type: q.get('type') ?? '', show: q.get('show') === 'flat' ? 'flat' : 'tree', graph: q.get('view') === 'graph' };
+  return { root: q.get('root'), sel: q.get('sel'), type: q.get('type') ?? '', graph: q.get('view') === 'graph' };
 }
-function writeNav(n: Nav) {
+function urlOf(n: Nav) {
   const q = new URLSearchParams();
   if (n.root) q.set('root', n.root);
   if (n.sel && n.sel !== n.root) q.set('sel', n.sel);
   if (n.type) q.set('type', n.type);
-  if (n.show === 'flat') q.set('show', 'flat');
   if (n.graph) q.set('view', 'graph');
   const s = q.toString();
-  history.pushState(null, '', s ? `?${s}` : location.pathname);
+  return s ? `?${s}` : location.pathname;
 }
+const writeNav = (n: Nav) => history.pushState(null, '', urlOf(n));
+// Что показано справа. Смена этого снимает открытый редактор — перед ней срабатывает защита ухода.
+const screenOf = (n: Nav) => (n.graph ? '#graph' : n.sel ?? n.root ?? '');
 
 const loadCollapsed = (): Set<string> => { try { return new Set(JSON.parse(localStorage.getItem('gs.collapsed') || '[]')); } catch { return new Set(); } };
 
@@ -34,6 +36,22 @@ export function App() {
   const [palette, setPalette] = useState<{ title: string; filter?: (n: GNode) => boolean; done: (n: GNode | null) => void } | null>(null);
   const [menu, setMenu] = useState<{ x: number; y: number; items: MenuItem[] } | null>(null);
   const [error, setError] = useState('');
+  const leaveGuard = useRef<LeaveGuard | null>(null);
+  const leaving = useRef(false);
+
+  // Переход с проверкой: если справа редактор с правками, он сначала сохраняет их.
+  const navigate = useCallback((next: Nav, push: boolean) => {
+    const apply = () => { if (push) writeNav(next); setNav(next); };
+    const g = leaveGuard.current;
+    if (!g || screenOf(next) === screenOf(navRef.current)) return apply();
+    if (leaving.current) return;
+    leaving.current = true;
+    g().then((ok) => { if (ok) apply(); }).finally(() => { leaving.current = false; });
+  }, []);
+  const guard = useCallback((fn: LeaveGuard) => {
+    leaveGuard.current = fn;
+    return () => { if (leaveGuard.current === fn) leaveGuard.current = null; };
+  }, []);
 
   const reload = useCallback(async () => setState(await api.state()), []);
   const toast = useCallback((text: string, action?: ToastItem['action']) => {
@@ -47,10 +65,16 @@ export function App() {
     const es = new EventSource('/api/events');
     let t = 0;
     es.onmessage = () => { clearTimeout(t); t = window.setTimeout(() => reload().catch(() => {}), 80); };
-    const pop = () => setNav(readNav());
+    // «Назад» в браузере: адрес уже сменился. Возвращаем текущий, а переход делаем через защиту.
+    const pop = () => {
+      const next = readNav();
+      if (!leaveGuard.current || screenOf(next) === screenOf(navRef.current)) return setNav(next);
+      history.pushState(null, '', urlOf(navRef.current));
+      navigate(next, true);
+    };
     addEventListener('popstate', pop);
     return () => { es.close(); removeEventListener('popstate', pop); };
-  }, [reload]);
+  }, [reload, navigate]);
 
   const ix = useMemo(() => (state ? buildIndex(state) : null), [state]);
 
@@ -64,14 +88,15 @@ export function App() {
       go: (patch) => {
         const next = { ...navRef.current, ...patch };
         if ('root' in patch && !('sel' in patch)) next.sel = patch.root ?? null;
-        writeNav(next); setNav(next);
+        navigate(next, true);
       },
+      guard,
       ask: (title, fields, submit = 'Готово') => new Promise((resolve) => setDialog({ title, fields, submit, done: (v) => { setDialog(null); resolve(v); } })),
       pick: (title, filter) => new Promise((resolve) => setPalette({ title, filter, done: (n) => { setPalette(null); resolve(n); } })),
       menu: (e, items) => { e.preventDefault(); setMenu({ x: e.clientX, y: e.clientY, items }); },
       run: async (fn) => { try { await fn(); } catch (e) { toast(e instanceof Error ? e.message : String(e)); } },
     };
-  }, [state, config, ix, nav, reload, toast]);
+  }, [state, config, ix, nav, reload, toast, navigate, guard]);
 
   // Ctrl+K — быстрый переход. Если узел вне текущего корня, корнем становится его проект.
   useEffect(() => {
@@ -122,7 +147,6 @@ function Sidebar() {
   const rows = useMemo(() => treeRows(ix, nav.root, nav.type, collapsed), [ix, nav.root, nav.type, collapsed]);
   // Без корня ниже своего — то, чем поделились другие.
   const sharedRows = useMemo(() => (nav.root ? [] : treeRows(ix, SHARED, nav.type, collapsed)), [ix, nav.root, nav.type, collapsed]);
-  const flat = useMemo(() => scope.filter((s) => (nav.type ? matches(s.node, nav.type) : s.node.type !== 'space')), [scope, nav.type]);
 
   const toggle = (id: string) => setCollapsed((c) => {
     const n = new Set(c);
@@ -141,10 +165,11 @@ function Sidebar() {
       </div>
 
       <nav className="crumbs" aria-label="Корень отображения">
-        <button className={!root ? 'here' : ''} onClick={() => app.go({ root: null })}>Все проекты</button>
+        <button className={!root ? 'here' : ''} title="Сюда можно перетащить узел — он станет проектом верхнего уровня"
+          onClick={() => app.go({ root: null })} {...dropProps(null, act)}>Все проекты</button>
         {crumbs.map((c) => (
           <span key={c.id}><Icon name="chev" className="sep" />
-            <button className={c.id === nav.root ? 'here' : ''} onClick={() => app.go({ root: c.id })}>{c.title}</button></span>
+            <button className={c.id === nav.root ? 'here' : ''} onClick={() => app.go({ root: c.id })} {...dropProps(c.id, act)}>{c.title}</button></span>
         ))}
       </nav>
 
@@ -155,32 +180,30 @@ function Sidebar() {
       </div>
 
       <div className="side-tools">
-        <div className="seg">
-          <button className={nav.show === 'tree' ? 'on' : ''} onClick={() => app.go({ show: 'tree' })}>Дерево</button>
-          <button className={nav.show === 'flat' ? 'on' : ''} onClick={() => app.go({ show: 'flat' })}>Список</button>
+        <div className="seg view-switch" role="group" aria-label="Что показать справа">
+          <button className={!nav.graph ? 'on' : ''} aria-pressed={!nav.graph} title="Открытый узел или список проектов" onClick={() => app.go({ graph: false })}><Icon name="doc" />Содержимое</button>
+          <button className={nav.graph ? 'on' : ''} aria-pressed={nav.graph} title="Область графом" onClick={() => app.go({ graph: true })}><Icon name="graph" />Граф</button>
         </div>
-        <button className={nav.graph ? 'on' : ''} title="Показать область графом" onClick={() => app.go({ graph: !nav.graph })}><Icon name="graph" />Граф</button>
         <button className="ghost" title="Создать здесь" onClick={(e) => (root ? app.menu(e, act.createItems(root)) : act.createIn(null, 'space'))}>
           <Icon name="plus" />{root ? 'Создать' : 'Проект'}
         </button>
       </div>
 
-      <div className="tree" role="tree">
+      {/* Пустое место дерева — тоже цель переноса: в текущий корень, без корня — на верхний уровень. */}
+      <div className="tree" role="tree" {...dropProps(nav.root, act, true)}>
         {root && (
           <div className={`row root-row ${nav.sel === root.id ? 'sel' : ''}`} onClick={() => app.go({ sel: root.id })}
-            onContextMenu={(e) => app.menu(e, act.menuFor(root))} {...dropProps(root, act)}>
+            onContextMenu={(e) => app.menu(e, act.menuFor(root))} {...dropProps(root.id, act)}>
             <Icon name="root" className="t-space" /><span className="title">{root.title}</span>
             {root.props.label && <span className="label">{root.props.label}</span>}
           </div>
         )}
-        {nav.show === 'tree'
-          ? rows.map((r) => <TreeRow key={r.node.id + (r.via ?? '')} row={r} toggle={toggle} />)
-          : flat.map((s) => <TreeRow key={s.node.id} row={{ node: s.node, depth: 0, via: s.via }} toggle={toggle} flatRoot={nav.root} />)}
-        {nav.show === 'tree' && sharedRows.length > 0 && <>
+        {rows.map((r) => <TreeRow key={r.node.id + (r.via ?? '')} row={r} toggle={toggle} />)}
+        {sharedRows.length > 0 && <>
           <div className="tree-sep">Доступно мне</div>
           {sharedRows.map((r) => <TreeRow key={'s' + r.node.id + (r.via ?? '')} row={r} toggle={toggle} />)}
         </>}
-        {(nav.show === 'tree' ? rows.length + sharedRows.length : flat.length) === 0 && (
+        {rows.length + sharedRows.length === 0 && (
           <div className="empty">{nav.type ? 'В этой области таких узлов нет' : root ? 'Пусто. Создайте что-нибудь кнопкой выше.' : 'Проектов пока нет'}</div>
         )}
       </div>
@@ -188,28 +211,41 @@ function Sidebar() {
   );
 }
 
-// Перенос узла в контейнер и загрузка файлов с диска — одним и тем же жестом.
-function dropProps(node: GNode, act: ReturnType<typeof useActions>) {
-  if (node.type !== 'space') return {};
+// Перенос узла и загрузка файлов с диска — одним и тем же жестом. target — новый родитель, null — верхний уровень.
+// area — подложка дерева: срабатывает только на пустом месте, строки обрабатывают бросок сами.
+function dropProps(target: string | null | undefined, act: ReturnType<typeof useActions>, area = false) {
+  if (target === undefined) return {};
+  const off = (e: React.DragEvent) => area && e.target instanceof Element && !!e.target.closest('.row');
   return {
-    onDragOver: (e: React.DragEvent) => { e.preventDefault(); e.currentTarget.classList.add('drop'); },
+    onDragOver: (e: React.DragEvent) => {
+      if (off(e)) { e.currentTarget.classList.remove('drop'); return; }
+      e.preventDefault(); e.stopPropagation(); e.currentTarget.classList.add('drop');
+    },
     onDragLeave: (e: React.DragEvent) => e.currentTarget.classList.remove('drop'),
     onDrop: (e: React.DragEvent) => {
-      e.preventDefault(); e.stopPropagation();
       e.currentTarget.classList.remove('drop');
-      if (e.dataTransfer.files.length) act.upload(node, [...e.dataTransfer.files]);
-      else { const id = e.dataTransfer.getData('application/x-graphspace-node'); if (id) act.move(id, node); }
+      if (off(e)) return;
+      e.preventDefault(); e.stopPropagation();
+      if (e.dataTransfer.files.length) act.upload(target, [...e.dataTransfer.files]);
+      else { const id = e.dataTransfer.getData('application/x-graphspace-node'); if (id) act.move(id, target); }
     },
   };
 }
 
-function TreeRow({ row, toggle, flatRoot }: { row: Row; toggle: (id: string) => void; flatRoot?: string | null }) {
+// Куда ляжет узел, брошенный на строку: в раздел — внутрь, на прочее — рядом, в тот же родитель.
+// undefined — бросать нельзя: выше узла ничего не видно (чужой общий).
+function dropTargetOf(app: Ctx, node: GNode): string | null | undefined {
+  if (node.type === 'space') return node.id;
+  if (node.parent_id) return app.ix.byId.has(node.parent_id) ? node.parent_id : undefined;
+  return node.owner === app.state.me ? null : undefined;
+}
+
+function TreeRow({ row, toggle }: { row: Row; toggle: (id: string) => void }) {
   const app = useApp();
   const act = useActions();
   const { node, depth, via } = row;
   const isSpace = node.type === 'space';
   const canRoot = !via && (isSpace || (app.ix.kids.get(node.id) ?? []).length > 0);
-  const where = flatRoot !== undefined ? pathOf(app.ix, node.id, flatRoot).slice(0, -1).map((p) => p.title).join(' / ') : '';
   return (
     <div role="treeitem" aria-selected={app.nav.sel === node.id}
       className={`row ${app.nav.sel === node.id ? 'sel' : ''} ${via ? 'shared' : ''}`}
@@ -219,17 +255,14 @@ function TreeRow({ row, toggle, flatRoot }: { row: Row; toggle: (id: string) => 
       onClick={() => app.go({ sel: node.id })}
       onDoubleClick={() => canRoot && app.go({ root: node.id })}
       onContextMenu={(e) => app.menu(e, act.menuFor(node, via))}
-      {...(via ? {} : dropProps(node, act))}>
-      {flatRoot === undefined && (
-        <button className={`twisty ${row.open ? 'open' : ''}`} style={{ visibility: row.expandable ? 'visible' : 'hidden' }} aria-label={row.open ? 'Свернуть' : 'Развернуть'}
-          onClick={(e) => { e.stopPropagation(); toggle(node.id); }}><Icon name="chev" /></button>
-      )}
+      {...(via ? {} : dropProps(dropTargetOf(app, node), act))}>
+      <button className={`twisty ${row.open ? 'open' : ''}`} style={{ visibility: row.expandable ? 'visible' : 'hidden' }} aria-label={row.open ? 'Свернуть' : 'Развернуть'}
+        onClick={(e) => { e.stopPropagation(); toggle(node.id); }}><Icon name="chev" /></button>
       <NodeIcon node={node} />
       <span className="title">{node.title}</span>
       {isSpace && node.props.label && <span className="label">{node.props.label}</span>}
       {isShareRoot(app.ix, node) && <span className="label where" title="Владелец">{node.owner}</span>}
       {node.type === 'resource' && node.props.kind && <span className="label">{node.props.kind}</span>}
-      {where && <span className="label where">{where}</span>}
       {via && <span className="badge" title="Общий узел: показан ссылкой, дом в другом месте"><Icon name="shared" />общий</span>}
       <span className="row-actions">
         {canRoot && <button title="Сделать корнем" onClick={(e) => { e.stopPropagation(); app.go({ root: node.id }); }}><Icon name="root" /></button>}

@@ -36,10 +36,12 @@ try {
   });
 
   await step('смена корня и вид «все git отсюда»', async () => {
-    await page.goto(`${s.base}/?root=${id('dev')}&type=kind:git&show=flat`);
+    await page.goto(`${s.base}/?root=${id('dev')}&type=kind:git`);
     await page.waitForSelector('.tree .row');
     assert.equal(await page.locator('.crumbs button.here').textContent(), 'dev');
-    assert.equal(await page.locator('.tree .row:not(.root-row)').count(), 5); // app1, app2, app3, ui-kit, iac
+    // Дерево с фильтром: подходящие узлы и путь к ним.
+    assert.equal(await page.locator('.tree .row:not(.root-row):has(.icon.t-resource)').count(), 5); // app1, app2, app3, ui-kit, iac
+    assert.equal(await page.locator('.chips button.on i').textContent(), '5');
     await shot('2-view-git');
   });
 
@@ -47,9 +49,25 @@ try {
     await page.goto(`${s.base}/?root=${id('app3', 'space')}`);
     await page.waitForSelector('.tree .row.shared');
     assert.equal(await page.locator('.tree .row.shared .title').textContent(), 'registry');
-    await page.goto(`${s.base}/?root=${id('dev')}&type=kind:registry&show=flat`);
-    await page.waitForSelector('.tree .row');
-    assert.equal(await page.locator('.tree .row:not(.root-row)').count(), 1);
+    await page.goto(`${s.base}/?root=${id('dev')}&type=kind:registry`);
+    await page.waitForSelector('.tree .row.shared');
+    assert.equal(await page.locator('.tree .row:not(.shared):has(.icon.t-resource)').count(), 1); // дом — app2
+    assert.equal(await page.locator('.chips button.on i').textContent(), '1');
+  });
+
+  await step('слева только дерево, справа переключатель «Содержимое | Граф»', async () => {
+    await page.goto(`${s.base}/?root=${id('Orbit')}`);
+    await page.waitForSelector('.view-switch');
+    assert.equal(await page.locator('.side-tools button', { hasText: 'Список' }).count(), 0);
+    assert.equal(await page.locator('.view-switch button.on').textContent(), 'Содержимое');
+    await page.locator('.view-switch button', { hasText: 'Граф' }).click();
+    await page.waitForSelector('.graph .gn');
+    assert.equal(await page.locator('.view-switch button.on').textContent(), 'Граф');
+    assert.ok(await page.locator('.tree .row').count() > 5); // дерево слева осталось
+    await shot('2b-switch-graph');
+    await page.locator('.view-switch button', { hasText: 'Содержимое' }).click();
+    await page.waitForFunction(() => document.querySelector('.node-title h1')?.textContent === 'Orbit');
+    assert.equal(await page.locator('.graph').count(), 0);
   });
 
   await step('граф: вложенность, ссылки пунктиром, фильтр приглушает', async () => {
@@ -103,6 +121,19 @@ try {
     await page.waitForSelector('.embed .md p:has-text("правка из теста")');
   });
 
+  await step('уход с дока без Ctrl+S сохраняет правку', async () => {
+    const doc = id('План запуска');
+    await page.goto(`${s.base}/?sel=${doc}`);
+    await page.locator('.slot button', { hasText: 'Править' }).click();
+    await page.locator('.doc-edit textarea').click();
+    await page.keyboard.press('Control+End');
+    await page.keyboard.type('\n\nне сохранял руками');
+    await page.locator('.tree .row .title', { hasText: /^dev$/ }).click();
+    await page.waitForFunction(() => document.querySelector('.node-title h1')?.textContent === 'dev');
+    assert.equal(await versions(doc), 2);
+    assert.match(await (await fetch(`${s.base}/api/nodes/${doc}/content`)).text(), /не сохранял руками/);
+  });
+
   await step('дети у не-раздела: док под репозиторием', async () => {
     await page.goto(`${s.base}/?sel=${id('app2', 'resource')}`);
     await page.waitForSelector('.node-kids .pill');
@@ -126,6 +157,17 @@ try {
     await page.waitForFunction(() => document.querySelector('.slot button')?.textContent === 'Сохранено');
     assert.equal(await versions(board), 2);
     await shot('6-board');
+    // Ещё прямоугольник и сразу на граф, без Ctrl+S: схема сохраняется сама.
+    await page.mouse.click(box.x + box.width - 400, box.y + box.height - 220);
+    await page.keyboard.press('r');
+    await page.mouse.move(box.x + box.width - 400, box.y + box.height - 220);
+    await page.mouse.down();
+    await page.mouse.move(box.x + box.width - 300, box.y + box.height - 140, { steps: 6 });
+    await page.mouse.up();
+    await page.waitForFunction(() => document.querySelector('.slot button')?.textContent === 'Сохранить');
+    await page.locator('.view-switch button', { hasText: 'Граф' }).click();
+    await page.waitForSelector('.graph .gn');
+    assert.equal(await versions(board), 3);
   });
 
   if (config.web.wordcraft) {
@@ -140,10 +182,46 @@ try {
       await page.waitForFunction(() => /v2/.test(document.querySelector('.node-title')?.textContent ?? ''), null, { timeout: 15000 });
       assert.equal(await versions(brief), 2);
       await shot('7-wordcraft');
+      // Правка без сохранения и уход на другой узел: хост сам сохраняет через file.save.
+      await page.waitForFunction(() => !/несохран/.test(document.querySelector('.slot .state')?.textContent ?? ''));
+      await frame.evaluate(() => window.wordcraft.execute('text.insert', { text: 'ещё: ' }));
+      await page.waitForFunction(() => /несохран/.test(document.querySelector('.slot .state')?.textContent ?? ''), null, { timeout: 15000 });
+      await page.locator('.tree .row .title', { hasText: /^dev$/ }).click();
+      await page.waitForFunction(() => document.querySelector('.node-title h1')?.textContent === 'dev', null, { timeout: 30000 });
+      assert.equal(await versions(brief), 3);
     });
   } else {
     console.log('– WordCraft пропущен: веб-сборки нет (./setup-craft.sh wordcraft)');
   }
+
+  await step('перенос: проект в проект и обратно наверх', async () => {
+    const mk = async (body) => (await fetch(`${s.base}/api/nodes`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })).json();
+    const p1 = await mk({ type: 'space', title: 'Проект 1', props: { label: 'проект' } });
+    const p2 = await mk({ type: 'space', title: 'Проект 2', props: { label: 'проект' } });
+    const note = await mk({ type: 'doc', title: 'Заметка сверху', ext: 'md' });
+    const parent = async (n) => (await state()).nodes.find((x) => x.id === n.id).parent_id;
+    const row = (n) => page.locator('.tree .row', { has: page.locator('.title', { hasText: new RegExp(`^${n.title}$`) }) });
+    await page.goto(s.base);
+    await row(p1).waitFor();
+    await row(p1).dragTo(row(p2)); // в раздел — внутрь
+    await page.waitForFunction(async (pid) => (await (await fetch('/api/state')).json()).nodes.find((x) => x.id === pid).parent_id !== null, p1.id);
+    assert.equal(await parent(p1), p2.id);
+    await row(p1).dragTo(page.locator('.crumbs button', { hasText: 'Все проекты' })); // на крошку — туда
+    await page.waitForFunction(async (pid) => (await (await fetch('/api/state')).json()).nodes.find((x) => x.id === pid).parent_id === null, p1.id);
+    await row(p1).dragTo(row(p2));
+    await page.waitForFunction(async (pid) => (await (await fetch('/api/state')).json()).nodes.find((x) => x.id === pid).parent_id !== null, p1.id);
+    await row(p1).dragTo(row(note)); // на не-раздел — рядом с ним, то есть наверх
+    await page.waitForFunction(async (pid) => (await (await fetch('/api/state')).json()).nodes.find((x) => x.id === pid).parent_id === null, p1.id);
+    // Внутри корня: из подраздела на уровень корня — бросок на строку корня.
+    await row(p1).dragTo(row(p2));
+    await page.waitForFunction(async (pid) => (await (await fetch('/api/state')).json()).nodes.find((x) => x.id === pid).parent_id !== null, p1.id);
+    const inner = await mk({ type: 'doc', title: 'Глубже', parent_id: p1.id, ext: 'md' });
+    await page.goto(`${s.base}/?root=${p2.id}`);
+    await row(inner).dragTo(page.locator('.tree .root-row'));
+    await page.waitForFunction(async (iid) => (await (await fetch('/api/state')).json()).nodes.find((x) => x.id === iid).parent_id !== null, inner.id);
+    assert.equal(await parent(inner), p2.id);
+    for (const n of [p1, p2, note]) await fetch(`${s.base}/api/nodes/${n.id}`, { method: 'DELETE' });
+  });
 
   await step('создание проекта с меткой и корзина', async () => {
     await page.goto(s.base);

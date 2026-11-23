@@ -16,6 +16,18 @@ export function CraftView({ node, slot }: { node: GNode; slot: HTMLElement | nul
   const [dirty, setDirty] = useState(false);
   const dirtyRef = useRef(false); dirtyRef.current = dirty;
   const nodeRef = useRef(node); nodeRef.current = node;
+  const waiter = useRef<((ok: boolean) => void) | null>(null); // ждёт save из редактора при уходе с узла
+
+  // Сохранить из хоста: та же команда, что Ctrl+S внутри. Ответ — сообщение save, а за ним запись версии.
+  const saveNow = () => new Promise<boolean>((resolve) => {
+    const ctl = (frame.current?.contentWindow as any)?.[craft];
+    if (typeof ctl?.execute !== 'function') return resolve(false);
+    let timer = 0;
+    const finish = (ok: boolean) => { clearTimeout(timer); if (waiter.current === finish) waiter.current = null; resolve(ok); };
+    timer = window.setTimeout(() => finish(false), 20000);
+    waiter.current = finish;
+    Promise.resolve().then(() => ctl.execute('file.save', {})).catch(() => finish(false));
+  });
 
   const sendOpen = async () => {
     const n = nodeRef.current;
@@ -52,8 +64,10 @@ export function CraftView({ node, slot }: { node: GNode; slot: HTMLElement | nul
             try {
               const r = await api.save(n.id, d.bytes, base.current);
               if (r.conflict) app.toast('На сервере уже другая версия. Ваша сохранена рядом как конфликтная.');
-              else { base.current = r.version.n; setDirty(false); if (!r.unchanged) app.toast(`Сохранена версия v${r.version.n}`); }
-            } finally { busy.current = false; }
+              else { base.current = r.version.n; if (!r.unchanged) app.toast(`Сохранена версия v${r.version.n}`); }
+              dirtyRef.current = false; setDirty(false); // конфликтная тоже сохранена
+              waiter.current?.(true);
+            } catch (err) { waiter.current?.(false); throw err; } finally { busy.current = false; }
           } else {
             // Экспорт в другой формат не подменяет файл, а ложится рядом отдельным узлом.
             const t = typeForExt(ext);
@@ -70,6 +84,14 @@ export function CraftView({ node, slot }: { node: GNode; slot: HTMLElement | nul
     addEventListener('beforeunload', leave);
     return () => { removeEventListener('message', onMessage); removeEventListener('beforeunload', leave); };
   }, [craft, node.id]);
+
+  // Уход на другой узел или граф уничтожает iframe вместе с правками: сначала сохраняем.
+  useEffect(() => app.guard(async () => {
+    if (!dirtyRef.current) return true;
+    app.toast(`Сохраняю «${nodeRef.current.title}»…`);
+    if (await saveNow()) return true;
+    return !!(await app.ask(`«${nodeRef.current.title}» не сохранился автоматически. Останьтесь и сохраните Ctrl+S в редакторе или уйдите без сохранения.`, [], 'Уйти без сохранения'));
+  }), [craft, node.id]);
 
   // Новая версия пришла со стороны (например, из нативного приложения) — перечитываем, если здесь нет правок.
   useEffect(() => {
