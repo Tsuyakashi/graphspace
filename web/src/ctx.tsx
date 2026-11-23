@@ -54,6 +54,7 @@ const P: Record<string, ReactNode> = {
   search: <><circle cx="7" cy="7" r="4.500" /><path d="M10.500 10.500l3.500 3.500" /></>,
   graph: <><circle cx="3.5" cy="8" r="1.8" /><circle cx="12.5" cy="3.5" r="1.8" /><circle cx="12.5" cy="12.5" r="1.8" /><path d="M5.2 7.2l5.600-2.900M5.200 8.800l5.600 2.900" /></>,
   shared: <path d="M5.500 10.500l5-5M6.500 5.500h4v4" />,
+  collapse: <><rect x="2.500" y="2.500" width="11" height="11" rx="1.500" /><path d="M5.500 8h5" /></>,
 };
 export const iconPaths = P;
 export function Icon({ name, className = '' }: { name: string; className?: string }) {

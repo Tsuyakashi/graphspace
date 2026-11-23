@@ -16,7 +16,7 @@ export function Projects() {
   const projects = app.ix.kids.get(null) ?? [];
   const shared = app.ix.kids.get(SHARED) ?? [];
   return (
-    <div className="page">
+    <div className="page fill" onContextMenu={(e) => { if (!e.defaultPrevented) app.menu(e, act.areaItems(null)); }}>
       <h1>Проекты</h1>
       <div className="cards">
         {projects.map((p) => (
@@ -144,6 +144,7 @@ function DocView({ node, slot }: { node: GNode; slot: HTMLElement | null }) {
         sent.current = t;
         if (r.conflict) app.toast('На сервере уже другая версия. Ваш текст сохранён рядом как конфликтная версия.');
         else { setSaved(t!); setBase(r.version.n); live.current = { ...live.current, saved: t!, base: r.version.n }; }
+        if (!r.unchanged) app.reload().catch(() => {}); // head и «Версии · vN» сразу, не ждём события
         return true;
       } catch (e) {
         app.toast(e instanceof Error ? e.message : String(e));
@@ -234,7 +235,8 @@ function SpaceView({ node }: { node: GNode }) {
     </button>
   );
   return (
-    <div className="page" onDragOver={(e) => e.preventDefault()}
+    <div className="page fill" onDragOver={(e) => e.preventDefault()}
+      onContextMenu={(e) => { if (!e.defaultPrevented) app.menu(e, act.createItems(node)); }}
       onDrop={(e) => { e.preventDefault(); if (e.dataTransfer.files.length) act.upload(node.id, [...e.dataTransfer.files]); }}>
       <div className="space-bar">
         <span className="muted">Во всей области:</span>

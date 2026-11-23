@@ -69,6 +69,14 @@ aside { background: var(--side); border-right: 1px solid var(--line); display: f
 .view-switch button { gap: 4px; padding: 3px 10px; }
 .view-switch button + button { border-left: 1px solid var(--line); }
 .view-switch .icon { width: 14px; height: 14px; }
+.side-actions { display: flex; align-items: center; gap: 2px; }
+.collapse-all { padding: 3px 5px; }
+.side-user { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-top: 1px solid var(--line); min-width: 0; }
+.side-user .avatar { flex: none; width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; background: var(--sel); color: var(--text); font-weight: 600; font-size: 12px; }
+.side-user .who { display: flex; flex-direction: column; min-width: 0; flex: 1; line-height: 1.25; }
+.side-user .who b, .side-user .who small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.side-user .who b { font-size: 12.5px; font-weight: 600; }
+.side-user .who small { font-size: 11px; color: var(--muted); }
 .tree { flex: 1; overflow: auto; padding-bottom: 24px; border-top: 1px solid var(--line); }
 .row { display: flex; align-items: center; gap: 6px; height: 26px; padding-right: 6px; cursor: pointer; user-select: none; position: relative; }
 .row:hover { background: var(--hover); }
@@ -102,6 +110,7 @@ aside { background: var(--side); border-right: 1px solid var(--line); display: f
 .node-body { flex: 1; min-height: 0; display: flex; }
 .node-main { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: auto; }
 .page { padding: 20px 24px 40px; max-width: 1100px; width: 100%; }
+.page.fill { flex: 1 0 auto; } /* пустое место страницы — тоже цель правого клика */
 .page.narrow { max-width: 640px; }
 .page h1 { font-size: 20px; margin: 0 0 16px; }
 .page h2, .versions b { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); font-weight: 600; }

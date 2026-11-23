@@ -130,6 +130,7 @@ export function GraphView() {
   return (
     <div className="graph-wrap">
       <svg ref={svg} className="graph" role="img" aria-label="Граф области"
+        onContextMenu={(e) => { if (!e.defaultPrevented) app.menu(e, act.areaItems(app.nav.root ? app.ix.byId.get(app.nav.root) ?? null : null)); }}
         onPointerDown={(e) => { drag.current = { x: e.clientX, y: e.clientY, tx: t.x, ty: t.y, moved: false }; }}
         onPointerMove={(e) => {
           const d = drag.current; if (!d) return;

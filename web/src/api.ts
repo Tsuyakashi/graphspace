@@ -24,6 +24,7 @@ export interface Config {
   web: Record<string, boolean>;
   native: Record<string, boolean>;
   preview: boolean;
+  auth: 'dev' | 'cf';
 }
 export interface SaveResult { version: Version; conflict?: boolean; unchanged?: boolean }
 

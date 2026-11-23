@@ -62,14 +62,18 @@ export default function BoardEditor({ node, slot }: { node: GNode; slot: HTMLEle
     const run = (async () => {
       busy.current = true;
       try {
-        const { elements, json } = scene();
+        const { json } = scene();
+        const savedVer = getSceneVersion(ex.current.getSceneElementsIncludingDeleted());
         const r = await api.save(node.id, json, base.current);
         if (r.conflict) app.toast('На сервере уже другая версия. Ваша сохранена рядом как конфликтная.');
         else base.current = r.version.n;
         // Конфликтная версия тоже сохранена: правки не потеряны, второй раз её не пишем.
-        savedScene.current = getSceneVersion(elements);
-        const still = getSceneVersion(ex.current.getSceneElements()) !== savedScene.current; // правили, пока шло сохранение
+        // Версию сцены считаем, как onChange: по всем элементам, вместе с удалёнными. Иначе после
+        // любого стирания сохранённая версия никогда не совпадёт и схема навсегда «несохранённая».
+        savedScene.current = savedVer;
+        const still = getSceneVersion(ex.current.getSceneElementsIncludingDeleted()) !== savedScene.current; // правили, пока шло сохранение
         dirtyRef.current = still; setDirty(still);
+        if (!r.conflict) app.reload().catch(() => {}); // head и «Версии · vN» сразу, не ждём события
         return true;
       } catch (e) {
         app.toast(e instanceof Error ? e.message : String(e));

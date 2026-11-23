@@ -34,6 +34,7 @@ const config = {
   web: Object.fromEntries(craftApps.map((a) => [a, fs.existsSync(path.join(CRAFT_DIR, a, 'index.html'))])),
   native: Object.fromEntries(craftApps.map((a) => [a, onPath(a)])),
   preview: onPath('wordcraft-cli'),
+  auth: AUTH_MODE, // интерфейсу: показать, кто вошёл и как
 };
 
 // ---------- события для клиентов ----------

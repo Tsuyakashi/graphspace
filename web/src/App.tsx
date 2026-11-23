@@ -65,6 +65,13 @@ export function App() {
     const es = new EventSource('/api/events');
     let t = 0;
     es.onmessage = () => { clearTimeout(t); t = window.setTimeout(() => reload().catch(() => {}), 80); };
+    // Поток мог отвалиться (прокси, сон ноутбука): EventSource переподключается сам, а пропущенное
+    // догоняем перечитыванием при переподключении и при возврате на вкладку.
+    let lost = false;
+    es.onerror = () => { if (!lost) console.warn('graphspace: поток /api/events прервался, переподключаюсь'); lost = true; };
+    es.onopen = () => { if (lost) { lost = false; reload().catch(() => {}); } };
+    const back = () => { if (document.visibilityState === 'visible') reload().catch(() => {}); };
+    document.addEventListener('visibilitychange', back);
     // «Назад» в браузере: адрес уже сменился. Возвращаем текущий, а переход делаем через защиту.
     const pop = () => {
       const next = readNav();
@@ -73,7 +80,7 @@ export function App() {
       navigate(next, true);
     };
     addEventListener('popstate', pop);
-    return () => { es.close(); removeEventListener('popstate', pop); };
+    return () => { es.close(); removeEventListener('popstate', pop); document.removeEventListener('visibilitychange', back); };
   }, [reload, navigate]);
 
   const ix = useMemo(() => (state ? buildIndex(state) : null), [state]);
@@ -148,12 +155,17 @@ function Sidebar() {
   // Без корня ниже своего — то, чем поделились другие.
   const sharedRows = useMemo(() => (nav.root ? [] : treeRows(ix, SHARED, nav.type, collapsed)), [ix, nav.root, nav.type, collapsed]);
 
+  const keep = (n: Set<string>) => {
+    try { localStorage.setItem('gs.collapsed', JSON.stringify([...n])); } catch { /* без хранилища просто не запомним */ }
+    return n;
+  };
   const toggle = (id: string) => setCollapsed((c) => {
     const n = new Set(c);
     n.has(id) ? n.delete(id) : n.add(id);
-    try { localStorage.setItem('gs.collapsed', JSON.stringify([...n])); } catch { /* без хранилища просто не запомним */ }
-    return n;
+    return keep(n);
   });
+  // Как «Collapse Folders» в VS Code: сворачивает всё, у чего есть дети, корень остаётся раскрытым.
+  const collapseAll = () => setCollapsed(keep(new Set([...ix.kids.keys()].filter((k): k is string => typeof k === 'string' && k !== SHARED))));
 
   return (
     <aside>
@@ -181,12 +193,15 @@ function Sidebar() {
 
       <div className="side-tools">
         <div className="seg view-switch" role="group" aria-label="Что показать справа">
-          <button className={!nav.graph ? 'on' : ''} aria-pressed={!nav.graph} title="Открытый узел или список проектов" onClick={() => app.go({ graph: false })}><Icon name="doc" />Содержимое</button>
-          <button className={nav.graph ? 'on' : ''} aria-pressed={nav.graph} title="Область графом" onClick={() => app.go({ graph: true })}><Icon name="graph" />Граф</button>
+          <button className={!nav.graph ? 'on' : ''} aria-pressed={!nav.graph} title="Открытый узел или список проектов" onClick={() => app.go({ graph: false })}><Icon name="doc" />Explorer</button>
+          <button className={nav.graph ? 'on' : ''} aria-pressed={nav.graph} title="Область графом" onClick={() => app.go({ graph: true })}><Icon name="graph" />Graph</button>
         </div>
-        <button className="ghost" title="Создать здесь" onClick={(e) => (root ? app.menu(e, act.createItems(root)) : act.createIn(null, 'space'))}>
-          <Icon name="plus" />{root ? 'Создать' : 'Проект'}
-        </button>
+        <span className="side-actions">
+          <button className="ghost" title="Создать здесь" onClick={(e) => (root ? app.menu(e, act.createItems(root)) : act.createIn(null, 'space'))}>
+            <Icon name="plus" />{root ? 'Создать' : 'Проект'}
+          </button>
+          <button className="ghost collapse-all" title="Свернуть всё" aria-label="Свернуть всё" onClick={collapseAll}><Icon name="collapse" /></button>
+        </span>
       </div>
 
       {/* Пустое место дерева — тоже цель переноса: в текущий корень, без корня — на верхний уровень. */}
@@ -208,7 +223,34 @@ function Sidebar() {
           <div className="empty">{nav.type ? 'В этой области таких узлов нет' : root ? 'Пусто. Создайте что-нибудь кнопкой выше.' : 'Проектов пока нет'}</div>
         )}
       </div>
+      <UserBadge />
     </aside>
+  );
+}
+
+// Кто вошёл. Email — из состояния; за Cloudflare Access страница спрашивает у Access имя и провайдера
+// входа (GitHub и т. п.) — эндпоинт get-identity есть на любом домене за Access и читает его куку.
+const IDP: Record<string, string> = { github: 'GitHub', google: 'Google', 'google-apps': 'Google', azureAD: 'Microsoft', onetimepin: 'код на почту', oidc: 'OIDC', saml: 'SAML' };
+function UserBadge() {
+  const app = useApp();
+  const [idp, setIdp] = useState<{ name?: string; type?: string } | null>(null);
+  const cf = app.config.auth === 'cf';
+  useEffect(() => {
+    if (!cf) return;
+    fetch('/cdn-cgi/access/get-identity', { credentials: 'same-origin' })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((j) => j && setIdp({ name: typeof j.name === 'string' ? j.name : undefined, type: j.idp?.type }))
+      .catch(() => {});
+  }, [cf]);
+  const me = app.state.me;
+  const name = idp?.name || me;
+  const via = !cf ? 'dev-режим, без входа' : idp?.type ? `через ${IDP[idp.type] ?? idp.type}` : 'Cloudflare Access';
+  return (
+    <div className="side-user" title={me}>
+      <span className="avatar" aria-hidden="true">{name.slice(0, 1).toUpperCase()}</span>
+      <span className="who"><b>{name}</b><small>{name !== me ? `${me} · ` : ''}{via}</small></span>
+      {cf && <a className="ghost" href="/cdn-cgi/access/logout" title="Выйти из Cloudflare Access">Выйти</a>}
+    </div>
   );
 }
 

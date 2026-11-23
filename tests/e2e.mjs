@@ -55,17 +55,17 @@ try {
     assert.equal(await page.locator('.chips button.on i').textContent(), '1');
   });
 
-  await step('слева только дерево, справа переключатель «Содержимое | Граф»', async () => {
+  await step('слева только дерево, справа переключатель «Explorer | Graph»', async () => {
     await page.goto(`${s.base}/?root=${id('Orbit')}`);
     await page.waitForSelector('.view-switch');
     assert.equal(await page.locator('.side-tools button', { hasText: 'Список' }).count(), 0);
-    assert.equal(await page.locator('.view-switch button.on').textContent(), 'Содержимое');
-    await page.locator('.view-switch button', { hasText: 'Граф' }).click();
+    assert.equal(await page.locator('.view-switch button.on').textContent(), 'Explorer');
+    await page.locator('.view-switch button', { hasText: 'Graph' }).click();
     await page.waitForSelector('.graph .gn');
-    assert.equal(await page.locator('.view-switch button.on').textContent(), 'Граф');
+    assert.equal(await page.locator('.view-switch button.on').textContent(), 'Graph');
     assert.ok(await page.locator('.tree .row').count() > 5); // дерево слева осталось
     await shot('2b-switch-graph');
-    await page.locator('.view-switch button', { hasText: 'Содержимое' }).click();
+    await page.locator('.view-switch button', { hasText: 'Explorer' }).click();
     await page.waitForFunction(() => document.querySelector('.node-title h1')?.textContent === 'Orbit');
     assert.equal(await page.locator('.graph').count(), 0);
   });
@@ -160,6 +160,12 @@ try {
     await page.waitForFunction(() => document.querySelector('.slot button')?.textContent === 'Сохранено');
     assert.equal(await versions(board), 2);
     await shot('6-board');
+    // Стереть фигуру и сохранить кнопкой: удалённые элементы не должны оставлять схему «несохранённой».
+    await page.keyboard.press('Delete');
+    await page.waitForFunction(() => document.querySelector('.slot button')?.textContent === 'Сохранить');
+    await page.locator('.slot button', { hasText: 'Сохранить' }).click();
+    await page.waitForFunction(() => document.querySelector('.slot button')?.textContent === 'Сохранено');
+    assert.equal(await versions(board), 3);
     // Ещё прямоугольник и сразу на граф, без Ctrl+S: схема сохраняется сама.
     await page.mouse.click(box.x + box.width - 400, box.y + box.height - 220);
     await page.keyboard.press('r');
@@ -168,9 +174,9 @@ try {
     await page.mouse.move(box.x + box.width - 300, box.y + box.height - 140, { steps: 6 });
     await page.mouse.up();
     await page.waitForFunction(() => document.querySelector('.slot button')?.textContent === 'Сохранить');
-    await page.locator('.view-switch button', { hasText: 'Граф' }).click();
+    await page.locator('.view-switch button', { hasText: 'Graph' }).click();
     await page.waitForSelector('.graph .gn');
-    assert.equal(await versions(board), 3);
+    assert.equal(await versions(board), 4);
   });
 
   if (config.web.wordcraft) {
@@ -224,6 +230,38 @@ try {
     await page.waitForFunction(async (iid) => (await (await fetch('/api/state')).json()).nodes.find((x) => x.id === iid).parent_id !== null, inner.id);
     assert.equal(await parent(inner), p2.id);
     for (const n of [p1, p2, note]) await fetch(`${s.base}/api/nodes/${n.id}`, { method: 'DELETE' });
+  });
+
+  await step('свернуть всё и кто вошёл', async () => {
+    await page.goto(s.base);
+    await page.waitForSelector('.tree .row');
+    const before = await page.locator('.tree .row').count();
+    await page.locator('.collapse-all').click();
+    const after = await page.locator('.tree .row').count();
+    assert.ok(after < before, `строк: ${before} → ${after}`);
+    assert.equal(await page.locator('.tree .row .twisty.open').count(), 0);
+    const me = (await state()).me;
+    assert.equal(await page.locator('.side-user .who b').textContent(), me);
+    assert.match(await page.locator('.side-user .who small').textContent(), /dev-режим/);
+    await page.evaluate(() => localStorage.removeItem('gs.collapsed'));
+  });
+
+  await step('правый клик по пустому месту справа: проекты, раздел, граф', async () => {
+    await page.goto(s.base);
+    await page.waitForSelector('.page h1');
+    await page.mouse.click(1300, 820, { button: 'right' });
+    await page.locator('.menu button', { hasText: 'Новый проект' }).waitFor();
+    await page.keyboard.press('Escape');
+    await page.goto(`${s.base}/?sel=${id('dev')}`);
+    await page.waitForSelector('.space-bar');
+    await page.mouse.click(1300, 820, { button: 'right' });
+    await page.locator('.menu button', { hasText: 'PowerPoint' }).waitFor();
+    await page.keyboard.press('Escape');
+    await page.goto(`${s.base}/?root=${id('dev')}&view=graph`);
+    await page.waitForSelector('.graph .gn');
+    await page.mouse.click(560, 860, { button: "right" }); // справа внизу — карточка узла
+    await page.locator('.menu button', { hasText: 'PowerPoint' }).waitFor();
+    await page.keyboard.press('Escape');
   });
 
   await step('правый клик по пустому месту дерева — меню создания', async () => {
@@ -312,6 +350,15 @@ try {
       assert.equal(await vers(X.id), 1);
       f = await go('Таблица', 'gridcraft');
       await p2.waitForFunction(() => document.querySelector('iframe')?.contentDocument?.querySelector('#t')?.value === 'hello', null, { timeout: 5000 });
+    });
+
+    await step('без событий сервера «Версии · vN» обновляется сразу после своего сохранения', async () => {
+      await go('Док');
+      await p2.locator('.slot button', { hasText: /^(Править|Готово)$/ }).waitFor();
+      if (await p2.locator('.slot button', { hasText: 'Править' }).count()) await p2.locator('.slot button', { hasText: 'Править' }).click(); // пустой док открыт сразу на правку
+      await p2.locator('.doc-edit textarea').fill('# Док\n\nтекст');
+      await p2.locator('.slot button', { hasText: 'Сохранить' }).click();
+      await p2.waitForFunction(() => [...document.querySelectorAll('.node-head button')].some((b) => /Версии · v\d/.test(b.textContent ?? '')), null, { timeout: 5000 });
     });
 
     await step('Craft: новый pptx открывается шаблоном, Ctrl+S пишет в этот узел, а не .deckcraft рядом', async () => {
