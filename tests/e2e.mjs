@@ -143,6 +143,25 @@ try {
     assert.equal((await page.locator('.node-kids .pill').textContent()).trim(), 'Как выкатывать');
   });
 
+  await step('git в десктоп-оболочке: сайт справа, свойства по кнопке', async () => {
+    // Заглушка моста desktop/preload.cjs: записывает вызовы вместо настоящего webview.
+    const p = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+    await p.addInitScript(() => {
+      const calls = (window.shellCalls = []);
+      window.graphspaceShell = { show: (url, rect) => calls.push(['show', url, rect]), hide: () => calls.push(['hide']), nav: (a) => calls.push(['nav', a]), onState: () => () => {} };
+    });
+    await p.goto(`${s.base}/?sel=${id('app2', 'resource')}`);
+    await p.waitForSelector('.web-view');
+    await p.waitForFunction(() => window.shellCalls.some((c) => c[0] === 'show'));
+    const [, url, rect] = await p.evaluate(() => window.shellCalls.findLast((c) => c[0] === 'show'));
+    assert.equal(url, 'https://git.home.arpa/orbit/app2');
+    assert.ok(rect.width > 400 && rect.height > 400);
+    await p.locator('.slot button', { hasText: 'Свойства' }).click();
+    await p.waitForSelector('.form');
+    assert.deepEqual(await p.evaluate(() => window.shellCalls.at(-1)), ['hide']);
+    await p.close();
+  });
+
   await step('схема: правка в Excalidraw создаёт версию', async () => {
     const board = id('Архитектура');
     await page.goto(`${s.base}/?sel=${board}`);

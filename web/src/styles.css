@@ -251,3 +251,10 @@ aside { background: var(--side); border-right: 1px solid var(--line); display: f
 .graph-card b { font-size: 14px; overflow-wrap: anywhere; }
 .graph-card .muted { font-size: 12px; }
 .graph-card-actions { display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
+
+/* ---------- внешний сайт в десктоп-оболочке ---------- */
+.web { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.web-bar { display: flex; align-items: center; gap: 2px; padding: 4px 8px; border-bottom: 1px solid var(--line); }
+.web-url { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 12px; padding: 0 6px; }
+.web-view { flex: 1; min-height: 0; }
+.icon.flip { transform: scaleX(-1); }

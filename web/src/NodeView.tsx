@@ -1,12 +1,13 @@
 // Правая часть: шапка узла и содержимое по типу.
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { api, type GNode, type Version } from './api';
+import { api, shell, type GNode, type Version } from './api';
 import { Icon, NodeIcon, openNode, useApp } from './ctx';
 import { useActions, RESOURCE_KINDS } from './actions';
 import { FILE_TYPES, SHARED, fmtSize, fmtTime, matches, pathOf, scopeOf, TYPE_LABEL } from './model';
 import { Markdown } from './Markdown';
 import { CraftView } from './Craft';
+import { WebPane } from './WebPane';
 
 const BoardEditor = lazy(() => import('./Board'));
 
@@ -97,7 +98,7 @@ export function NodeView({ node }: { node: GNode }) {
           {node.type === 'board' && <Suspense fallback={<div className="pane-note">Редактор схем загружается…</div>}><BoardEditor node={node} slot={slot} /></Suspense>}
           {(node.type === 'office' || node.type === 'pdf' || node.type === 'design' || (node.type === 'file' && craft)) && <CraftView node={node} slot={slot} />}
           {node.type === 'file' && !craft && <FileView node={node} />}
-          {node.type === 'resource' && <ResourceView node={node} />}
+          {node.type === 'resource' && <ResourceView node={node} slot={slot} />}
         </div>
         {showVersions && <VersionsPanel node={node} close={() => setShowVersions(false)} />}
       </div>
@@ -257,7 +258,19 @@ function SpaceView({ node }: { node: GNode }) {
 }
 
 // ---------- внешний ресурс ----------
-function ResourceView({ node }: { node: GNode }) {
+// В десктоп-оболочке сам сайт открывается справа, свойства — по кнопке. В браузере — только свойства:
+// GitHub и подобные запрещают встраивание во фрейм.
+function ResourceView({ node, slot }: { node: GNode; slot: HTMLElement | null }) {
+  const url = node.props.url ?? '';
+  const live = !!shell && /^https?:\/\//i.test(url);
+  const [props, setProps] = useState(!live);
+  return <>
+    {live && slot && createPortal(<button className={props ? 'on' : ''} onClick={() => setProps((v) => !v)}>Свойства</button>, slot)}
+    {live && !props ? <WebPane url={url} /> : <ResourceProps node={node} />}
+  </>;
+}
+
+function ResourceProps({ node }: { node: GNode }) {
   const app = useApp();
   const act = useActions();
   const [p, setP] = useState({ kind: node.props.kind ?? '', url: node.props.url ?? '', note: node.props.note ?? '' });
@@ -268,7 +281,8 @@ function ResourceView({ node }: { node: GNode }) {
   const safeUrl = /^https?:\/\//i.test(p.url);
   return (
     <div className="page narrow">
-      <p className="muted">Внешняя система. Платформа хранит только ссылку и свойства, сам ресурс остаётся там, где живёт.</p>
+      <p className="muted">Внешняя система. Платформа хранит только ссылку и свойства, сам ресурс остаётся там, где живёт.
+        {!shell && ' Внутри Graphspace сайт открывается в десктоп-оболочке (desktop/).'}</p>
       <form className="form" onSubmit={(e) => { e.preventDefault(); save(); }}>
         <label><span>Вид</span>
           <input value={p.kind} list="kinds" onChange={(e) => setP({ ...p, kind: e.target.value })} />

@@ -91,3 +91,13 @@ export const api = {
     } catch { /* больше 64 КБ — keepalive не принимает, остаётся вопрос браузера */ }
   },
 };
+
+// Десктоп-оболочка (desktop/): webview поверх прямоугольника панели. В обычном браузере её нет.
+export interface WebState { url: string; title: string; loading: boolean; back: boolean; forward: boolean }
+export interface Shell {
+  show(url: string, rect: { x: number; y: number; width: number; height: number }): void;
+  hide(): void;
+  nav(action: 'back' | 'forward' | 'reload' | 'home' | 'external'): void;
+  onState(cb: (s: WebState) => void): () => void;
+}
+export const shell: Shell | undefined = (window as any).graphspaceShell;
