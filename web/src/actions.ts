@@ -46,21 +46,22 @@ export function useActions() {
     if (node) app.go({ sel: node.id });
   });
 
-  const upload = (parent: GNode, files: File[]) => app.run(async () => {
+  // parentId null — на верхний уровень: там может жить любой узел.
+  const upload = (parentId: string | null, files: File[]) => app.run(async () => {
     let last: GNode | null = null;
     for (const f of files) {
       const { base, ext } = splitName(f.name);
       const t = typeForExt(ext);
-      last = await api.create({ type: t.type, title: t.type === 'file' ? f.name : base, parent_id: parent.id, ext: t.ext || null });
+      last = await api.create({ type: t.type, title: t.type === 'file' ? f.name : base, parent_id: parentId, ext: t.ext || null });
       await api.save(last.id, f, null);
     }
     await app.reload();
     if (last) { app.go({ sel: last.id }); app.toast(files.length > 1 ? `Загружено файлов: ${files.length}` : `Загружен: ${files[0].name}`); }
   });
 
-  const pickFiles = (parent: GNode) => {
+  const pickFiles = (parentId: string | null) => {
     const input = Object.assign(document.createElement('input'), { type: 'file', multiple: true });
-    input.onchange = () => input.files?.length && upload(parent, [...input.files]);
+    input.onchange = () => input.files?.length && upload(parentId, [...input.files]);
     input.click();
   };
 
@@ -77,11 +78,22 @@ export function useActions() {
     app.toast(`«${node.title}» в корзине`, { label: 'Вернуть', run: () => app.run(async () => { await api.restore(node.id); await app.reload(); }) });
   });
 
-  const move = (id: string, parent: GNode) => app.run(async () => {
+  // Перенос в другой узел или на верхний уровень (parentId null). Нельзя внутрь самого себя — сервер ответит 400.
+  const move = (id: string, parentId: string | null) => app.run(async () => {
     const n = app.ix.byId.get(id);
-    if (!n || n.parent_id === parent.id || n.id === parent.id) return;
-    await api.patch(id, { parent_id: parent.id });
+    if (!n || n.parent_id === parentId || n.id === parentId) return;
+    if (parentId && pathOf(app.ix, parentId).some((p) => p.id === id)) throw new Error('Нельзя перенести узел внутрь самого себя');
+    await api.patch(id, { parent_id: parentId });
     await app.reload();
+    const to = parentId ? app.ix.byId.get(parentId)?.title : null;
+    app.toast(to ? `«${n.title}» перенесён в «${to}»` : `«${n.title}» теперь на верхнем уровне`);
+  });
+
+  // Перенос через выбор цели — когда перетаскивать неудобно: далеко по дереву или цель не раздел.
+  const moveTo = (node: GNode) => app.run(async () => {
+    const target = await app.pick(`Куда перенести «${node.title}»`, (n) =>
+      n.owner === node.owner && n.id !== node.parent_id && !pathOf(app.ix, n.id).some((p) => p.id === node.id));
+    if (target) await move(node.id, target.id);
   });
 
   // Общий узел: остаётся в своём доме, а здесь появляется ссылкой. Годится и для раздела целиком.
@@ -117,8 +129,15 @@ export function useActions() {
     { label: 'PowerPoint', run: () => createIn(parent, 'pptx') },
     { label: 'Ресурс: git, S3, registry…', run: () => createIn(parent, 'resource') },
     { label: '', sep: true },
-    { label: 'Загрузить файлы…', run: () => pickFiles(parent) },
+    { label: 'Загрузить файлы…', run: () => pickFiles(parent.id) },
     { label: 'Добавить существующий ссылкой…', run: () => addExisting(parent) },
+  ];
+
+  // Правый клик по пустому месту дерева: создать в текущем корне, без корня — на верхнем уровне.
+  const areaItems = (root: GNode | null): MenuItem[] => root ? createItems(root) : [
+    { label: 'Верхний уровень', sep: true },
+    { label: 'Новый проект', run: () => createIn(null, 'space') },
+    { label: 'Загрузить файлы…', run: () => pickFiles(null) },
   ];
 
   const menuFor = (node: GNode, via?: string): MenuItem[] => {
@@ -149,10 +168,11 @@ export function useActions() {
       }
     } else if (shareRoot) items.push({ label: `Владелец: ${node.owner}`, sep: true });
     // Корень общего раздела удаляет и переносит только владелец, наверх выносит тоже он.
-    if (node.parent_id && mine) items.push({ label: 'Вынести на верхний уровень', run: () => app.run(async () => { await api.patch(node.id, { parent_id: null }); await app.reload(); }) });
+    if (!shareRoot) items.push({ label: 'Перенести в…', run: () => moveTo(node) });
+    if (node.parent_id && mine) items.push({ label: 'Вынести на верхний уровень', run: () => move(node.id, null) });
     if (!shareRoot) items.push({ label: 'В корзину', danger: true, run: () => remove(node) });
     return items;
   };
 
-  return { createIn, upload, pickFiles, rename, remove, move, addExisting, unlink, shareNode, createItems, menuFor };
+  return { createIn, upload, pickFiles, rename, remove, move, moveTo, addExisting, unlink, shareNode, createItems, areaItems, menuFor };
 }

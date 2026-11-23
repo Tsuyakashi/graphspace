@@ -27,6 +27,7 @@ export default function BoardEditor({ node, slot }: { node: GNode; slot: HTMLEle
   const base = useRef<number | null>(null);
   const savedScene = useRef(0);
   const busy = useRef(false);
+  const inflight = useRef<Promise<boolean> | null>(null);
   const dirtyRef = useRef(false); dirtyRef.current = dirty;
 
   useEffect(() => {
@@ -49,22 +50,59 @@ export default function BoardEditor({ node, slot }: { node: GNode; slot: HTMLEle
     if (initial && !busy.current && !dirtyRef.current && node.head !== base.current) setRev((r) => r + 1);
   }, [node.head]);
 
-  const save = useCallback(async () => {
-    if (!ex.current || busy.current) return;
-    busy.current = true;
-    try {
-      const elements = ex.current.getSceneElements();
-      const r = await api.save(node.id, serializeAsJSON(elements, ex.current.getAppState(), ex.current.getFiles(), 'local'), base.current);
-      if (r.conflict) app.toast('На сервере уже другая версия. Ваша сохранена рядом как конфликтная.');
-      else { base.current = r.version.n; savedScene.current = getSceneVersion(elements); setDirty(false); }
-    } catch (e) { app.toast(e instanceof Error ? e.message : String(e)); } finally { busy.current = false; }
+  const scene = () => {
+    const elements = ex.current.getSceneElements();
+    return { elements, json: serializeAsJSON(elements, ex.current.getAppState(), ex.current.getFiles(), 'local') };
+  };
+
+  // true — схема на сервере (или правок нет). Идущее сохранение ждём, а не пропускаем.
+  const save = useCallback((): Promise<boolean> => {
+    if (inflight.current) return inflight.current.then(() => save());
+    if (!ex.current) return Promise.resolve(true);
+    const run = (async () => {
+      busy.current = true;
+      try {
+        const { json } = scene();
+        const savedVer = getSceneVersion(ex.current.getSceneElementsIncludingDeleted());
+        const r = await api.save(node.id, json, base.current);
+        if (r.conflict) app.toast('На сервере уже другая версия. Ваша сохранена рядом как конфликтная.');
+        else base.current = r.version.n;
+        // Конфликтная версия тоже сохранена: правки не потеряны, второй раз её не пишем.
+        // Версию сцены считаем, как onChange: по всем элементам, вместе с удалёнными. Иначе после
+        // любого стирания сохранённая версия никогда не совпадёт и схема навсегда «несохранённая».
+        savedScene.current = savedVer;
+        const still = getSceneVersion(ex.current.getSceneElementsIncludingDeleted()) !== savedScene.current; // правили, пока шло сохранение
+        dirtyRef.current = still; setDirty(still);
+        if (!r.conflict) app.reload().catch(() => {}); // head и «Версии · vN» сразу, не ждём события
+        return true;
+      } catch (e) {
+        app.toast(e instanceof Error ? e.message : String(e));
+        return false;
+      } finally { busy.current = false; inflight.current = null; }
+    })();
+    inflight.current = run;
+    return run;
   }, [node.id]);
 
   useEffect(() => {
-    const key = (e: KeyboardEvent) => { if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') { e.preventDefault(); save(); } };
+    const key = (e: KeyboardEvent) => { if ((e.ctrlKey || e.metaKey) && e.code === 'KeyS') { e.preventDefault(); save(); } };
     addEventListener('keydown', key, true);
     return () => { removeEventListener('keydown', key, true); if (dirtyRef.current) save(); };
   }, [save]);
+
+  // Уход на другой узел или граф ждёт сохранения. Не вышло — спрашиваем.
+  useEffect(() => app.guard(async () => {
+    if (!dirtyRef.current || await save()) return true;
+    return !!(await app.ask(`Не удалось сохранить «${node.title}». Уйти без сохранения?`, [], 'Уйти без сохранения'));
+  }), [save]);
+
+  // Закрытие вкладки: браузер переспросит; если уйти — схема уходит keepalive-запросом, если влезает в 64 КБ.
+  useEffect(() => {
+    const ask = (e: BeforeUnloadEvent) => { if (dirtyRef.current) e.preventDefault(); };
+    const flush = () => { if (dirtyRef.current && ex.current) api.saveOnExit(node.id, scene().json, base.current); };
+    addEventListener('beforeunload', ask); addEventListener('pagehide', flush);
+    return () => { removeEventListener('beforeunload', ask); removeEventListener('pagehide', flush); };
+  }, [node.id]);
 
   return (
     <div className="board">

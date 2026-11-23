@@ -16,7 +16,7 @@ export function Projects() {
   const projects = app.ix.kids.get(null) ?? [];
   const shared = app.ix.kids.get(SHARED) ?? [];
   return (
-    <div className="page">
+    <div className="page fill" onContextMenu={(e) => { if (!e.defaultPrevented) app.menu(e, act.areaItems(null)); }}>
       <h1>Проекты</h1>
       <div className="cards">
         {projects.map((p) => (
@@ -95,8 +95,8 @@ export function NodeView({ node }: { node: GNode }) {
           {node.type === 'space' && <SpaceView node={node} />}
           {node.type === 'doc' && <DocView node={node} slot={slot} />}
           {node.type === 'board' && <Suspense fallback={<div className="pane-note">Редактор схем загружается…</div>}><BoardEditor node={node} slot={slot} /></Suspense>}
-          {(node.type === 'office' || node.type === 'pdf' || node.type === 'design') && <CraftView node={node} slot={slot} />}
-          {node.type === 'file' && <FileView node={node} />}
+          {(node.type === 'office' || node.type === 'pdf' || node.type === 'design' || (node.type === 'file' && craft)) && <CraftView node={node} slot={slot} />}
+          {node.type === 'file' && !craft && <FileView node={node} />}
           {node.type === 'resource' && <ResourceView node={node} />}
         </div>
         {showVersions && <VersionsPanel node={node} close={() => setShowVersions(false)} />}
@@ -114,12 +114,16 @@ function DocView({ node, slot }: { node: GNode; slot: HTMLElement | null }) {
   const [edit, setEdit] = useState(false);
   const area = useRef<HTMLTextAreaElement>(null);
   const busy = useRef(false);
+  const inflight = useRef<Promise<boolean> | null>(null);
+  const sent = useRef<string | null>(null); // последний текст, который сервер принял (в т.ч. конфликтной версией)
   const live = useRef({ text, saved, base }); live.current = { text, saved, base };
   const dirty = text !== null && text !== saved;
+  const unsent = () => { const { text: t, saved: s } = live.current; return t !== null && t !== s && t !== sent.current; };
 
   const load = useCallback(async () => {
     const r = await api.text(node.id).catch(() => ({ text: '', version: 0 }));
     setText(r.text); setSaved(r.text); setBase(r.version || null);
+    sent.current = r.text;
     return r.text;
   }, [node.id]);
   useEffect(() => { load().then((t) => setEdit(t.trim().split('\n').length <= 1)); }, [load]);
@@ -128,22 +132,48 @@ function DocView({ node, slot }: { node: GNode; slot: HTMLElement | null }) {
     if (t !== null && !busy.current && t === s && node.head !== b) load();
   }, [node.head, load]);
 
-  const save = useCallback(async () => {
-    const { text: t, saved: s, base: b } = live.current;
-    if (t === null || t === s || busy.current) return;
-    busy.current = true;
-    try {
-      const r = await api.save(node.id, t, b);
-      if (r.conflict) app.toast('На сервере уже другая версия. Ваш текст сохранён рядом как конфликтная версия.');
-      else { setSaved(t); setBase(r.version.n); }
-    } catch (e) { app.toast(e instanceof Error ? e.message : String(e)); } finally { busy.current = false; }
+  // true — правки на сервере (или их нет). Идущее сохранение не пропускается: ждём его и досохраняем остаток.
+  const save = useCallback((): Promise<boolean> => {
+    if (inflight.current) return inflight.current.then(() => save());
+    if (!unsent()) return Promise.resolve(true);
+    const { text: t, base: b } = live.current;
+    const run = (async () => {
+      busy.current = true;
+      try {
+        const r = await api.save(node.id, t!, b);
+        sent.current = t;
+        if (r.conflict) app.toast('На сервере уже другая версия. Ваш текст сохранён рядом как конфликтная версия.');
+        else { setSaved(t!); setBase(r.version.n); live.current = { ...live.current, saved: t!, base: r.version.n }; }
+        if (!r.unchanged) app.reload().catch(() => {}); // head и «Версии · vN» сразу, не ждём события
+        return true;
+      } catch (e) {
+        app.toast(e instanceof Error ? e.message : String(e));
+        return false;
+      } finally { busy.current = false; inflight.current = null; }
+    })();
+    inflight.current = run;
+    return run;
   }, [node.id]);
 
   useEffect(() => {
-    const key = (e: KeyboardEvent) => { if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') { e.preventDefault(); save(); } };
+    const key = (e: KeyboardEvent) => { if ((e.ctrlKey || e.metaKey) && e.code === 'KeyS') { e.preventDefault(); save(); } };
     addEventListener('keydown', key);
-    return () => { removeEventListener('keydown', key); save(); }; // уход с дока сохраняет правки
+    return () => { removeEventListener('keydown', key); save(); }; // страховка: размонтирование тоже сохраняет
   }, [save]);
+
+  // Уход на другой узел или граф ждёт сохранения. Не вышло — спрашиваем.
+  useEffect(() => app.guard(async () => {
+    if (await save()) return true;
+    return !!(await app.ask(`Не удалось сохранить «${node.title}». Уйти без сохранения?`, [], 'Уйти без сохранения'));
+  }), [save]);
+
+  // Закрытие вкладки: браузер переспросит, а если уйти — правка уходит запросом, который переживает страницу.
+  useEffect(() => {
+    const ask = (e: BeforeUnloadEvent) => { if (unsent()) e.preventDefault(); };
+    const flush = () => { if (unsent()) api.saveOnExit(node.id, live.current.text!, live.current.base); };
+    addEventListener('beforeunload', ask); addEventListener('pagehide', flush);
+    return () => { removeEventListener('beforeunload', ask); removeEventListener('pagehide', flush); };
+  }, [node.id]);
 
   const insert = async () => {
     const n = await app.pick('Что вставить в док', (x) => x.id !== node.id);
@@ -205,8 +235,9 @@ function SpaceView({ node }: { node: GNode }) {
     </button>
   );
   return (
-    <div className="page" onDragOver={(e) => e.preventDefault()}
-      onDrop={(e) => { e.preventDefault(); if (e.dataTransfer.files.length) act.upload(node, [...e.dataTransfer.files]); }}>
+    <div className="page fill" onDragOver={(e) => e.preventDefault()}
+      onContextMenu={(e) => { if (!e.defaultPrevented) app.menu(e, act.createItems(node)); }}
+      onDrop={(e) => { e.preventDefault(); if (e.dataTransfer.files.length) act.upload(node.id, [...e.dataTransfer.files]); }}>
       <div className="space-bar">
         <span className="muted">Во всей области:</span>
         {totals.length ? totals.map((t) => (

@@ -3,7 +3,9 @@ import { createContext, useContext, useEffect, useMemo, useRef, useState, type R
 import type { Config, GNode, State } from './api';
 import { type Index, pathOf, scopeOf } from './model';
 
-export interface Nav { root: string | null; sel: string | null; type: string; show: 'tree' | 'flat'; graph: boolean }
+export interface Nav { root: string | null; sel: string | null; type: string; graph: boolean }
+// Редактор с правками: перед уходом с узла сохраняет их. false — остаться.
+export type LeaveGuard = () => Promise<boolean>;
 export interface Field { name: string; label: string; value?: string; options?: string[]; placeholder?: string; optional?: boolean }
 export interface MenuItem { label: string; run?: () => void; danger?: boolean; sep?: boolean; hint?: string }
 
@@ -19,6 +21,8 @@ export interface Ctx {
   pick: (title: string, filter?: (n: GNode) => boolean) => Promise<GNode | null>;
   menu: (e: { clientX: number; clientY: number; preventDefault(): void }, items: MenuItem[]) => void;
   run: (fn: () => Promise<unknown>) => Promise<void>;
+  // Регистрирует защиту ухода, возвращает снятие. Действует, пока узел открыт.
+  guard: (fn: LeaveGuard) => () => void;
 }
 export const AppCtx = createContext<Ctx>(null as unknown as Ctx);
 export const useApp = () => useContext(AppCtx);
@@ -50,6 +54,7 @@ const P: Record<string, ReactNode> = {
   search: <><circle cx="7" cy="7" r="4.500" /><path d="M10.500 10.500l3.500 3.500" /></>,
   graph: <><circle cx="3.5" cy="8" r="1.8" /><circle cx="12.5" cy="3.5" r="1.8" /><circle cx="12.5" cy="12.5" r="1.8" /><path d="M5.2 7.2l5.600-2.900M5.200 8.800l5.600 2.900" /></>,
   shared: <path d="M5.500 10.500l5-5M6.500 5.500h4v4" />,
+  collapse: <><rect x="2.500" y="2.500" width="11" height="11" rx="1.500" /><path d="M5.500 8h5" /></>,
 };
 export const iconPaths = P;
 export function Icon({ name, className = '' }: { name: string; className?: string }) {

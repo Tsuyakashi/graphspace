@@ -16,12 +16,35 @@ export function CraftView({ node, slot }: { node: GNode; slot: HTMLElement | nul
   const [dirty, setDirty] = useState(false);
   const dirtyRef = useRef(false); dirtyRef.current = dirty;
   const nodeRef = useRef(node); nodeRef.current = node;
+  const waiter = useRef<((ok: boolean) => void) | null>(null); // ждёт save из редактора при уходе с узла
+
+  // Сохранить из хоста: та же команда, что Ctrl+S внутри. Ответ — сообщение save, а за ним запись версии.
+  const saveNow = () => new Promise<boolean>((resolve) => {
+    const ctl = (frame.current?.contentWindow as any)?.[craft];
+    if (typeof ctl?.execute !== 'function') return resolve(false);
+    let timer = 0;
+    const finish = (ok: boolean) => { clearTimeout(timer); if (waiter.current === finish) waiter.current = null; resolve(ok); };
+    timer = window.setTimeout(() => finish(false), 20000);
+    waiter.current = finish;
+    Promise.resolve().then(() => ctl.execute('file.save', {})).catch(() => finish(false));
+  });
 
   const sendOpen = async () => {
     const n = nodeRef.current;
-    if (!n.head || !ready.current || !frame.current?.contentWindow) return;
-    const { bytes, version } = await api.content(n.id);
-    base.current = version;
+    if (!ready.current || !frame.current?.contentWindow) return;
+    // Содержимое берём с сервера, а не по head из состояния: оно могло не успеть обновиться
+    // (сохранили при уходе — вернулись раньше, чем пришло событие), и узел открылся бы пустым.
+    const c = await api.content(n.id).catch(() => null);
+    let bytes: ArrayBuffer;
+    if (c) {
+      bytes = c.bytes; base.current = c.version;
+    } else {
+      // Пустой узел: открываем пустой шаблон под именем узла. Безымянный документ Craft сохранил бы
+      // в свой формат (Presentation1.deckcraft) отдельным файлом, а с именем Save пишет в .pptx сюда.
+      const t = n.ext ? await fetch(`/blank/blank.${n.ext}`) : null;
+      if (!t?.ok) return;
+      bytes = await t.arrayBuffer(); base.current = null;
+    }
     const name = fileName(n);
     // ready.file === true — приложение принимает File, иначе байты.
     const msg = ready.current.file ? { type: `${craft}:open`, name, file: new File([bytes], name) } : { type: `${craft}:open`, name, bytes };
@@ -47,18 +70,27 @@ export function CraftView({ node, slot }: { node: GNode; slot: HTMLElement | nul
         app.run(async () => {
           const n = nodeRef.current;
           const { base: title, ext } = splitName(String(d.name ?? ''));
-          if (!ext || ext.toLowerCase() === n.ext) {
+          // Ответ на save с id: файл принят, редактор снимает «есть правки».
+          const ack = () => { if (d.id != null) frame.current?.contentWindow?.postMessage({ type: `${craft}:saved`, id: d.id }, location.origin); };
+          // export: true (GridCraft) — копия в другом формате, даже если расширение совпало.
+          if (d.export !== true && (!ext || ext.toLowerCase() === n.ext)) {
             busy.current = true;
             try {
               const r = await api.save(n.id, d.bytes, base.current);
               if (r.conflict) app.toast('На сервере уже другая версия. Ваша сохранена рядом как конфликтная.');
-              else { base.current = r.version.n; setDirty(false); if (!r.unchanged) app.toast(`Сохранена версия v${r.version.n}`); }
-            } finally { busy.current = false; }
+              else { base.current = r.version.n; if (!r.unchanged) app.toast(`Сохранена версия v${r.version.n}`); }
+              dirtyRef.current = false; setDirty(false); // конфликтная тоже сохранена
+              ack();
+              waiter.current?.(true);
+              if (!r.unchanged) app.reload().catch(() => {}); // не ждём события: head нужен сразу
+            } catch (err) { waiter.current?.(false); throw err; } finally { busy.current = false; }
           } else {
             // Экспорт в другой формат не подменяет файл, а ложится рядом отдельным узлом.
             const t = typeForExt(ext);
             const made = await api.create({ type: t.type, title: t.type === 'file' ? d.name : title, parent_id: n.parent_id, ext: t.ext });
             await api.save(made.id, d.bytes, null);
+            ack();
+            waiter.current?.(true); // правки целы — в соседнем узле
             await app.reload();
             app.toast(`Экспорт сохранён рядом: ${d.name}`, { label: 'Открыть', run: () => app.go({ sel: made.id }) });
           }
@@ -70,6 +102,14 @@ export function CraftView({ node, slot }: { node: GNode; slot: HTMLElement | nul
     addEventListener('beforeunload', leave);
     return () => { removeEventListener('message', onMessage); removeEventListener('beforeunload', leave); };
   }, [craft, node.id]);
+
+  // Уход на другой узел или граф уничтожает iframe вместе с правками: сначала сохраняем.
+  useEffect(() => app.guard(async () => {
+    if (!dirtyRef.current) return true;
+    app.toast(`Сохраняю «${nodeRef.current.title}»…`);
+    if (await saveNow()) return true;
+    return !!(await app.ask(`«${nodeRef.current.title}» не сохранился автоматически. Останьтесь и сохраните Ctrl+S в редакторе или уйдите без сохранения.`, [], 'Уйти без сохранения'));
+  }), [craft, node.id]);
 
   // Новая версия пришла со стороны (например, из нативного приложения) — перечитываем, если здесь нет правок.
   useEffect(() => {

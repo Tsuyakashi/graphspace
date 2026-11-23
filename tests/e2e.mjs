@@ -36,10 +36,12 @@ try {
   });
 
   await step('смена корня и вид «все git отсюда»', async () => {
-    await page.goto(`${s.base}/?root=${id('dev')}&type=kind:git&show=flat`);
+    await page.goto(`${s.base}/?root=${id('dev')}&type=kind:git`);
     await page.waitForSelector('.tree .row');
     assert.equal(await page.locator('.crumbs button.here').textContent(), 'dev');
-    assert.equal(await page.locator('.tree .row:not(.root-row)').count(), 5); // app1, app2, app3, ui-kit, iac
+    // Дерево с фильтром: подходящие узлы и путь к ним.
+    assert.equal(await page.locator('.tree .row:not(.root-row):has(.icon.t-resource)').count(), 5); // app1, app2, app3, ui-kit, iac
+    assert.equal(await page.locator('.chips button.on i').textContent(), '5');
     await shot('2-view-git');
   });
 
@@ -47,9 +49,25 @@ try {
     await page.goto(`${s.base}/?root=${id('app3', 'space')}`);
     await page.waitForSelector('.tree .row.shared');
     assert.equal(await page.locator('.tree .row.shared .title').textContent(), 'registry');
-    await page.goto(`${s.base}/?root=${id('dev')}&type=kind:registry&show=flat`);
-    await page.waitForSelector('.tree .row');
-    assert.equal(await page.locator('.tree .row:not(.root-row)').count(), 1);
+    await page.goto(`${s.base}/?root=${id('dev')}&type=kind:registry`);
+    await page.waitForSelector('.tree .row.shared');
+    assert.equal(await page.locator('.tree .row:not(.shared):has(.icon.t-resource)').count(), 1); // дом — app2
+    assert.equal(await page.locator('.chips button.on i').textContent(), '1');
+  });
+
+  await step('слева только дерево, справа переключатель «Explorer | Graph»', async () => {
+    await page.goto(`${s.base}/?root=${id('Orbit')}`);
+    await page.waitForSelector('.view-switch');
+    assert.equal(await page.locator('.side-tools button', { hasText: 'Список' }).count(), 0);
+    assert.equal(await page.locator('.view-switch button.on').textContent(), 'Explorer');
+    await page.locator('.view-switch button', { hasText: 'Graph' }).click();
+    await page.waitForSelector('.graph .gn');
+    assert.equal(await page.locator('.view-switch button.on').textContent(), 'Graph');
+    assert.ok(await page.locator('.tree .row').count() > 5); // дерево слева осталось
+    await shot('2b-switch-graph');
+    await page.locator('.view-switch button', { hasText: 'Explorer' }).click();
+    await page.waitForFunction(() => document.querySelector('.node-title h1')?.textContent === 'Orbit');
+    assert.equal(await page.locator('.graph').count(), 0);
   });
 
   await step('граф: вложенность, ссылки пунктиром, фильтр приглушает', async () => {
@@ -96,11 +114,27 @@ try {
     await page.locator('.doc-edit textarea').click();
     await page.keyboard.press('Control+End');
     await page.keyboard.type('\n\nправка из теста');
-    await page.keyboard.press('Control+s');
+    // Русская раскладка: key — «ы», code — KeyS. Браузерное «Сохранить страницу» не должно открыться.
+    const prevented = await page.locator('.doc-edit textarea').evaluate((t) =>
+      !t.dispatchEvent(new KeyboardEvent('keydown', { key: 'ы', code: 'KeyS', ctrlKey: true, bubbles: true, cancelable: true })));
+    assert.ok(prevented, 'Ctrl+S в ru-раскладке перехвачен');
     await page.waitForFunction(() => [...document.querySelectorAll('.slot button')].some((b) => b.textContent === 'Сохранено'));
     assert.equal(await versions(doc), 2);
     await page.goto(`${s.base}/?sel=${id('Обзор проекта')}`);
     await page.waitForSelector('.embed .md p:has-text("правка из теста")');
+  });
+
+  await step('уход с дока без Ctrl+S сохраняет правку', async () => {
+    const doc = id('План запуска');
+    await page.goto(`${s.base}/?sel=${doc}`);
+    await page.locator('.slot button', { hasText: 'Править' }).click();
+    await page.locator('.doc-edit textarea').click();
+    await page.keyboard.press('Control+End');
+    await page.keyboard.type('\n\nне сохранял руками');
+    await page.locator('.tree .row .title', { hasText: /^dev$/ }).click();
+    await page.waitForFunction(() => document.querySelector('.node-title h1')?.textContent === 'dev');
+    assert.equal(await versions(doc), 2);
+    assert.match(await (await fetch(`${s.base}/api/nodes/${doc}/content`)).text(), /не сохранял руками/);
   });
 
   await step('дети у не-раздела: док под репозиторием', async () => {
@@ -126,6 +160,23 @@ try {
     await page.waitForFunction(() => document.querySelector('.slot button')?.textContent === 'Сохранено');
     assert.equal(await versions(board), 2);
     await shot('6-board');
+    // Стереть фигуру и сохранить кнопкой: удалённые элементы не должны оставлять схему «несохранённой».
+    await page.keyboard.press('Delete');
+    await page.waitForFunction(() => document.querySelector('.slot button')?.textContent === 'Сохранить');
+    await page.locator('.slot button', { hasText: 'Сохранить' }).click();
+    await page.waitForFunction(() => document.querySelector('.slot button')?.textContent === 'Сохранено');
+    assert.equal(await versions(board), 3);
+    // Ещё прямоугольник и сразу на граф, без Ctrl+S: схема сохраняется сама.
+    await page.mouse.click(box.x + box.width - 400, box.y + box.height - 220);
+    await page.keyboard.press('r');
+    await page.mouse.move(box.x + box.width - 400, box.y + box.height - 220);
+    await page.mouse.down();
+    await page.mouse.move(box.x + box.width - 300, box.y + box.height - 140, { steps: 6 });
+    await page.mouse.up();
+    await page.waitForFunction(() => document.querySelector('.slot button')?.textContent === 'Сохранить');
+    await page.locator('.view-switch button', { hasText: 'Graph' }).click();
+    await page.waitForSelector('.graph .gn');
+    assert.equal(await versions(board), 4);
   });
 
   if (config.web.wordcraft) {
@@ -140,10 +191,94 @@ try {
       await page.waitForFunction(() => /v2/.test(document.querySelector('.node-title')?.textContent ?? ''), null, { timeout: 15000 });
       assert.equal(await versions(brief), 2);
       await shot('7-wordcraft');
+      // Правка без сохранения и уход на другой узел: хост сам сохраняет через file.save.
+      await page.waitForFunction(() => !/несохран/.test(document.querySelector('.slot .state')?.textContent ?? ''));
+      await frame.evaluate(() => window.wordcraft.execute('text.insert', { text: 'ещё: ' }));
+      await page.waitForFunction(() => /несохран/.test(document.querySelector('.slot .state')?.textContent ?? ''), null, { timeout: 15000 });
+      await page.locator('.tree .row .title', { hasText: /^dev$/ }).click();
+      await page.waitForFunction(() => document.querySelector('.node-title h1')?.textContent === 'dev', null, { timeout: 30000 });
+      assert.equal(await versions(brief), 3);
     });
   } else {
     console.log('– WordCraft пропущен: веб-сборки нет (./setup-craft.sh wordcraft)');
   }
+
+  await step('перенос: проект в проект и обратно наверх', async () => {
+    const mk = async (body) => (await fetch(`${s.base}/api/nodes`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })).json();
+    const p1 = await mk({ type: 'space', title: 'Проект 1', props: { label: 'проект' } });
+    const p2 = await mk({ type: 'space', title: 'Проект 2', props: { label: 'проект' } });
+    const note = await mk({ type: 'doc', title: 'Заметка сверху', ext: 'md' });
+    const parent = async (n) => (await state()).nodes.find((x) => x.id === n.id).parent_id;
+    const row = (n) => page.locator('.tree .row', { has: page.locator('.title', { hasText: new RegExp(`^${n.title}$`) }) });
+    await page.goto(s.base);
+    await row(p1).waitFor();
+    await row(p1).dragTo(row(p2)); // в раздел — внутрь
+    await page.waitForFunction(async (pid) => (await (await fetch('/api/state')).json()).nodes.find((x) => x.id === pid).parent_id !== null, p1.id);
+    assert.equal(await parent(p1), p2.id);
+    await row(p1).dragTo(page.locator('.crumbs button', { hasText: 'Все проекты' })); // на крошку — туда
+    await page.waitForFunction(async (pid) => (await (await fetch('/api/state')).json()).nodes.find((x) => x.id === pid).parent_id === null, p1.id);
+    await row(p1).dragTo(row(p2));
+    await page.waitForFunction(async (pid) => (await (await fetch('/api/state')).json()).nodes.find((x) => x.id === pid).parent_id !== null, p1.id);
+    await row(p1).dragTo(row(note)); // на не-раздел — рядом с ним, то есть наверх
+    await page.waitForFunction(async (pid) => (await (await fetch('/api/state')).json()).nodes.find((x) => x.id === pid).parent_id === null, p1.id);
+    // Внутри корня: из подраздела на уровень корня — бросок на строку корня.
+    await row(p1).dragTo(row(p2));
+    await page.waitForFunction(async (pid) => (await (await fetch('/api/state')).json()).nodes.find((x) => x.id === pid).parent_id !== null, p1.id);
+    const inner = await mk({ type: 'doc', title: 'Глубже', parent_id: p1.id, ext: 'md' });
+    await page.goto(`${s.base}/?root=${p2.id}`);
+    await row(inner).dragTo(page.locator('.tree .root-row'));
+    await page.waitForFunction(async (iid) => (await (await fetch('/api/state')).json()).nodes.find((x) => x.id === iid).parent_id !== null, inner.id);
+    assert.equal(await parent(inner), p2.id);
+    for (const n of [p1, p2, note]) await fetch(`${s.base}/api/nodes/${n.id}`, { method: 'DELETE' });
+  });
+
+  await step('свернуть всё и кто вошёл', async () => {
+    await page.goto(s.base);
+    await page.waitForSelector('.tree .row');
+    const before = await page.locator('.tree .row').count();
+    await page.locator('.collapse-all').click();
+    const after = await page.locator('.tree .row').count();
+    assert.ok(after < before, `строк: ${before} → ${after}`);
+    assert.equal(await page.locator('.tree .row .twisty.open').count(), 0);
+    const me = (await state()).me;
+    assert.equal(await page.locator('.side-user .who b').textContent(), me);
+    assert.match(await page.locator('.side-user .who small').textContent(), /dev-режим/);
+    await page.evaluate(() => localStorage.removeItem('gs.collapsed'));
+  });
+
+  await step('правый клик по пустому месту справа: проекты, раздел, граф', async () => {
+    await page.goto(s.base);
+    await page.waitForSelector('.page h1');
+    await page.mouse.click(1300, 820, { button: 'right' });
+    await page.locator('.menu button', { hasText: 'Новый проект' }).waitFor();
+    await page.keyboard.press('Escape');
+    await page.goto(`${s.base}/?sel=${id('dev')}`);
+    await page.waitForSelector('.space-bar');
+    await page.mouse.click(1300, 820, { button: 'right' });
+    await page.locator('.menu button', { hasText: 'PowerPoint' }).waitFor();
+    await page.keyboard.press('Escape');
+    await page.goto(`${s.base}/?root=${id('dev')}&view=graph`);
+    await page.waitForSelector('.graph .gn');
+    await page.mouse.click(560, 860, { button: "right" }); // справа внизу — карточка узла
+    await page.locator('.menu button', { hasText: 'PowerPoint' }).waitFor();
+    await page.keyboard.press('Escape');
+  });
+
+  await step('правый клик по пустому месту дерева — меню создания', async () => {
+    await page.goto(s.base);
+    await page.waitForSelector('.tree .row');
+    await page.locator('.tree').evaluate((t) => { t.scrollTop = t.scrollHeight; });
+    const box = await page.locator('.tree').boundingBox();
+    await page.mouse.click(box.x + 40, box.y + box.height - 8, { button: 'right' });
+    await page.locator('.menu button', { hasText: 'Новый проект' }).waitFor();
+    await page.keyboard.press('Escape');
+    await page.goto(`${s.base}/?root=${id('dev')}`);
+    await page.waitForSelector('.tree .row');
+    const b2 = await page.locator('.tree').boundingBox();
+    await page.mouse.click(b2.x + 40, b2.y + b2.height - 8, { button: 'right' });
+    await page.locator('.menu button', { hasText: 'PowerPoint' }).waitFor();
+    await page.keyboard.press('Escape');
+  });
 
   await step('создание проекта с меткой и корзина', async () => {
     await page.goto(s.base);
@@ -185,6 +320,67 @@ try {
     assert.equal(await page.locator('.graph .gn > text', { hasText: 'Проект Алисы' }).count(), 1); // подпись узла, не путь в title
     await shot('10-graph-shared');
   });
+
+  // Хост Craft на заглушке (tests/craft-mock): тот же протокол, что у веб-сборок, без самих сборок.
+  const m = await startServer({ env: { GRAPHSPACE_CRAFT_DIR: new URL('./craft-mock', import.meta.url).pathname } });
+  try {
+    const mk = async (b) => (await fetch(`${m.base}/api/nodes`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(b) })).json();
+    const vers = async (nid) => (await (await fetch(`${m.base}/api/nodes/${nid}/versions`)).json()).length;
+    const P = await mk({ type: 'space', title: 'P' });
+    const X = await mk({ type: 'office', title: 'Таблица', parent_id: P.id, ext: 'xlsx' });
+    const S = await mk({ type: 'office', title: 'Слайды', parent_id: P.id, ext: 'pptx' });
+    await mk({ type: 'doc', title: 'Док', parent_id: P.id, ext: 'md' });
+    const p2 = await browser.newPage();
+    await p2.route('**/api/events', (r) => r.abort()); // без событий: состояние у клиента устаревает
+    const go = async (title, app) => {
+      await p2.locator('.tree .row .title', { hasText: new RegExp(`^${title}$`) }).click();
+      await p2.waitForFunction((t) => document.querySelector('.node-title h1')?.textContent === t, title);
+      if (!app) return null;
+      await p2.waitForFunction((a) => new RegExp(a + ' mock').test(document.querySelector('.slot .state')?.textContent ?? ''), app);
+      await p2.waitForTimeout(300);
+      return p2.frames().find((f) => f.url().includes(`/craft/${app}/`));
+    };
+    await p2.goto(`${m.base}/?root=${P.id}`);
+
+    await step('Craft: новый файл, правка, уход и возврат — правка на месте', async () => {
+      let f = await go('Таблица', 'gridcraft');
+      await f.locator('#t').fill('hello');
+      await p2.waitForFunction(() => /несохран/.test(document.querySelector('.slot .state')?.textContent ?? ''));
+      await go('Док');
+      assert.equal(await vers(X.id), 1);
+      f = await go('Таблица', 'gridcraft');
+      await p2.waitForFunction(() => document.querySelector('iframe')?.contentDocument?.querySelector('#t')?.value === 'hello', null, { timeout: 5000 });
+    });
+
+    await step('без событий сервера «Версии · vN» обновляется сразу после своего сохранения', async () => {
+      await go('Док');
+      await p2.locator('.slot button', { hasText: /^(Править|Готово)$/ }).waitFor();
+      if (await p2.locator('.slot button', { hasText: 'Править' }).count()) await p2.locator('.slot button', { hasText: 'Править' }).click(); // пустой док открыт сразу на правку
+      await p2.locator('.doc-edit textarea').fill('# Док\n\nтекст');
+      await p2.locator('.slot button', { hasText: 'Сохранить' }).click();
+      await p2.waitForFunction(() => [...document.querySelectorAll('.node-head button')].some((b) => /Версии · v\d/.test(b.textContent ?? '')), null, { timeout: 5000 });
+    });
+
+    await step('Craft: новый pptx открывается шаблоном, Ctrl+S пишет в этот узел, а не .deckcraft рядом', async () => {
+      const count = async () => (await (await fetch(`${m.base}/api/state`)).json()).nodes.length;
+      const before = await count();
+      const f = await go('Слайды', 'deckcraft');
+      assert.match(await f.locator('#log').textContent(), /opened Слайды\.pptx/);
+      await f.locator('#t').fill('slide');
+      await f.locator('#t').press('Control+s');
+      await p2.waitForFunction(async (nid) => (await (await fetch(`/api/nodes/${nid}/versions`)).json()).length === 1, S.id);
+      assert.equal(await count(), before);
+    });
+
+    await step('Craft: .deckcraft рядом открывается в DeckCraft', async () => {
+      const junk = await mk({ type: 'file', title: 'Presentation1.deckcraft', parent_id: P.id, ext: 'deckcraft' });
+      await fetch(`${m.base}/api/nodes/${junk.id}/content`, { method: 'PUT', headers: { 'x-base-version': '' }, body: 'MOCK:старое' });
+      await p2.reload();
+      await go('Presentation1.deckcraft', 'deckcraft');
+      await p2.waitForFunction(() => document.querySelector('iframe')?.contentDocument?.querySelector('#t')?.value === 'старое', null, { timeout: 5000 });
+    });
+    await p2.close();
+  } finally { await m.stop(); }
 
   const real = errors.filter((e) => !/subsetting/.test(e));
   assert.deepEqual(real, [], 'ошибки на странице');
